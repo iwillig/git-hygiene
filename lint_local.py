@@ -418,7 +418,12 @@ examples:
     )
 
     # Check selection
-    p.add_argument("--grammar-only", action="store_true", help="Only run the grammar check")
+    p.add_argument(
+        "--enable-grammar",
+        action="store_true",
+        help="Enable the LanguageTool grammar checker (disabled by default)",
+    )
+    p.add_argument("--grammar-only", action="store_true", help="Only run the grammar check (implies --enable-grammar)")
     p.add_argument("--structure-only", action="store_true", help="Only run the LLM structure check")
 
     # LLM
@@ -512,8 +517,9 @@ def main(argv: list[str] | None = None) -> int:
 
         ci = CommitIssue(sha=sha, message=message)
 
-        # Grammar check
-        if not args.structure_only:
+        # Grammar check (disabled by default; --enable-grammar or --grammar-only to turn on)
+        run_grammar = args.enable_grammar or args.grammar_only
+        if run_grammar and not args.structure_only:
             try:
                 ci.grammar_issues = check_grammar(
                     message, args.languagetool_url, args.language, custom_words

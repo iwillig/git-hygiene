@@ -37,6 +37,11 @@ inputs:
     required: false
     default: "true"
 
+  enable-grammar:
+    description: "Enable the LanguageTool grammar checker. Disabled by default."
+    required: false
+    default: "false"
+
   languagetool-url:
     description: "LanguageTool API base URL"
     required: false
@@ -98,6 +103,7 @@ runs:
         LLM_API_KEY: ${{ inputs.llm-api-key }}
         LLM_API_BASE: ${{ inputs.llm-api-base }}
         USE_LOCAL_MODEL: ${{ inputs.use-local-model }}
+        ENABLE_GRAMMAR: ${{ inputs.enable-grammar }}
         LANGUAGETOOL_URL: ${{ inputs.languagetool-url }}
         LANGUAGETOOL_LANGUAGE: ${{ inputs.languagetool-language }}
         IGNORE_PATTERNS: ${{ inputs.ignore-patterns }}

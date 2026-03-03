@@ -2,8 +2,8 @@
 
 A GitHub Action that lints git commit messages on pull requests for:
 
-- **Grammar issues** -- via the [LanguageTool](https://languagetool.org/) API
 - **Structure quality** -- via an LLM (checks that commits explain *why*, not just *what*)
+- **Grammar issues** (optional, disabled by default) -- via the [LanguageTool](https://languagetool.org/) API
 
 When issues are found the action **posts a PR comment** summarising them and **fails the check**.
 
@@ -71,6 +71,7 @@ jobs:
 | `llm-model`             | no       | `qwen2.5:0.5b`                       | Model name -- Ollama model or OpenAI-compatible model name             |
 | `llm-api-base`          | no       | `http://localhost:11434/v1`           | OpenAI-compatible API base URL                                         |
 | `llm-api-key`           | no       | --                                    | API key for a remote LLM provider (required when `use-local-model` is false) |
+| `enable-grammar`        | no       | `false`                              | Enable the LanguageTool grammar checker                                |
 | `languagetool-url`      | no       | `https://api.languagetool.org/v2`    | LanguageTool API base URL (point to self-hosted if desired)             |
 | `languagetool-language` | no       | `en-US`                              | Language code for grammar checking                                     |
 | `ignore-patterns`       | no       | `^Merge\s` / `^Revert\s`            | Newline-separated regexes -- matching commit subjects are skipped      |
@@ -209,10 +210,13 @@ python lint_local.py --last 10
 # Use a specific model
 python lint_local.py --model tinyllama
 
+# Enable grammar checking too
+python lint_local.py --enable-grammar
+
 # Only grammar check (no LLM)
 python lint_local.py --grammar-only
 
-# Only structure check (no LanguageTool)
+# Only structure check (no LanguageTool) -- the default
 python lint_local.py --structure-only
 
 # Use a remote model instead (e.g. OpenAI)
@@ -228,7 +232,8 @@ python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --
 | `--model MODEL` | LLM model name (default: `qwen2.5:0.5b`) |
 | `--api-base URL` | OpenAI-compatible API base URL (default: `http://localhost:11434/v1`) |
 | `--api-key KEY` | API key for remote providers |
-| `--grammar-only` | Only run the grammar check |
+| `--enable-grammar` | Enable the LanguageTool grammar checker (disabled by default) |
+| `--grammar-only` | Only run the grammar check (implies `--enable-grammar`) |
 | `--structure-only` | Only run the LLM structure check |
 | `--languagetool-url URL` | Custom LanguageTool API URL |
 | `--language CODE` | Language for grammar checking (default: `en-US`) |

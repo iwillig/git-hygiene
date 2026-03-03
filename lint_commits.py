@@ -27,6 +27,7 @@ LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
 LLM_API_BASE = os.environ.get("LLM_API_BASE", "http://localhost:11434/v1")
 USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "true").lower() == "true"
+ENABLE_GRAMMAR = os.environ.get("ENABLE_GRAMMAR", "false").lower() == "true"
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2")
 LANGUAGETOOL_LANGUAGE = os.environ.get("LANGUAGETOOL_LANGUAGE", "en-US")
 IGNORE_PATTERNS_RAW = os.environ.get("IGNORE_PATTERNS", "")
@@ -421,10 +422,11 @@ def main() -> int:
         ci = CommitIssue(sha=sha, message=message)
 
         # Grammar check
-        try:
-            ci.grammar_issues = check_grammar(message)
-        except Exception as exc:
-            print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
+        if ENABLE_GRAMMAR:
+            try:
+                ci.grammar_issues = check_grammar(message)
+            except Exception as exc:
+                print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
 
         # Structure check
         ci.structure_issues = check_structure(message)
