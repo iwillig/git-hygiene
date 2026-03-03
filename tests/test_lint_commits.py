@@ -180,7 +180,32 @@ class TestLlmChat:
         call_kwargs = mock_post.call_args
         payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
         assert payload["model"] == "qwen2.5:0.5b"
+        # With no system prompt, only one message
+        assert len(payload["messages"]) == 1
+        assert payload["messages"][0]["role"] == "user"
         assert payload["messages"][0]["content"] == "Hi"
+
+    def test_system_prompt_sent_as_system_message(self):
+        """When a system_prompt is provided, it is the first message."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
+            lint_commits.llm_chat(
+                "commit msg", "qwen2.5:0.5b", "http://localhost:11434/v1",
+                system_prompt="You are a reviewer.",
+            )
+
+        call_kwargs = mock_post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert len(payload["messages"]) == 2
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][0]["content"] == "You are a reviewer."
+        assert payload["messages"][1]["role"] == "user"
+        assert payload["messages"][1]["content"] == "commit msg"
 
     def test_includes_auth_header(self):
         """API key is passed as a Bearer token."""
@@ -219,35 +244,68 @@ class TestLlmChat:
 
 
 class TestCheckStructure:
-    def test_clean_response(self):
-        """LLM returns clean JSON with issues."""
-        llm_response = json.dumps({"issues": ["Subject is vague"], "score": 4})
+    def test_good_commit(self):
+        """LLM recognises a commit that explains why."""
+        llm_response = json.dumps({
+            "explains_why": True,
+            "score": 9,
+            "feedback": "Good commit message that explains the motivation.",
+            "suggestion": None,
+        })
         with patch("lint_commits.llm_chat", return_value=llm_response):
-            issues = lint_commits.check_structure("updates")
-            assert issues == ["Subject is vague"]
-
-    def test_no_issues(self):
-        """LLM finds no problems."""
-        llm_response = json.dumps({"issues": [], "score": 9})
-        with patch("lint_commits.llm_chat", return_value=llm_response):
-            issues = lint_commits.check_structure(
+            result = lint_commits.check_structure(
                 "Add user avatar upload\n\nUsers requested the ability to upload custom avatars."
             )
-            assert issues == []
+            assert result["explains_why"] is True
+            assert result["score"] == 9
+            assert result["suggestion"] is None
+
+    def test_poor_commit(self):
+        """LLM flags a commit that does not explain why."""
+        llm_response = json.dumps({
+            "explains_why": False,
+            "score": 2,
+            "feedback": "This commit only states what changed, not why.",
+            "suggestion": "Fix typo in README\n\nThe API endpoint URL had a trailing slash that caused 404 errors.",
+        })
+        with patch("lint_commits.llm_chat", return_value=llm_response):
+            result = lint_commits.check_structure("updates")
+            assert result["explains_why"] is False
+            assert result["score"] == 2
+            assert result["suggestion"] is not None
 
     def test_markdown_fenced_response(self):
         """LLM wraps response in markdown fences -- still parsed."""
-        llm_response = '```json\n{"issues": ["Missing body"], "score": 5}\n```'
+        inner = json.dumps({
+            "explains_why": False, "score": 3,
+            "feedback": "Missing context.", "suggestion": None,
+        })
+        llm_response = f"```json\n{inner}\n```"
         with patch("lint_commits.llm_chat", return_value=llm_response):
-            issues = lint_commits.check_structure("Fix bug")
-            assert issues == ["Missing body"]
+            result = lint_commits.check_structure("Fix bug")
+            assert result["score"] == 3
 
     def test_llm_failure(self):
-        """If the LLM call explodes, we get an error string back."""
+        """If the LLM call explodes, we get an error dict back."""
         with patch("lint_commits.llm_chat", side_effect=RuntimeError("timeout")):
-            issues = lint_commits.check_structure("something")
-            assert len(issues) == 1
-            assert "timeout" in issues[0]
+            result = lint_commits.check_structure("something")
+            assert result["explains_why"] is False
+            assert result["score"] == 0
+            assert "timeout" in result["feedback"]
+
+    def test_system_prompt_is_used(self):
+        """check_structure passes the system prompt to llm_chat."""
+        llm_response = json.dumps({
+            "explains_why": True, "score": 8,
+            "feedback": "Good.", "suggestion": None,
+        })
+        with patch("lint_commits.llm_chat", return_value=llm_response) as mock_chat:
+            lint_commits.check_structure("some commit")
+
+        call_kwargs = mock_chat.call_args
+        # system_prompt should be passed as a keyword argument
+        assert "system_prompt" in call_kwargs.kwargs
+        assert "explains the WHY" in call_kwargs.kwargs["system_prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -284,10 +342,14 @@ class TestBuildReport:
         ci = lint_commits.CommitIssue(
             sha="def67890",
             message="stuff",
-            structure_issues=["Subject is vague"],
+            structure_issues=["This commit does not explain why."],
+            score=2,
+            suggestion="Fix login timeout\n\nThe previous 5s timeout was too short for slow networks.",
         )
         report = lint_commits.build_report([ci])
-        assert "Subject is vague" in report
+        assert "does not explain why" in report
+        assert "2/10" in report
+        assert "Fix login timeout" in report
 
 
 # ---------------------------------------------------------------------------

@@ -172,6 +172,8 @@ class CommitIssue:
     message: str
     grammar_issues: list[dict] = field(default_factory=list)
     structure_issues: list[str] = field(default_factory=list)
+    score: int | None = None
+    suggestion: str | None = None
 
     @property
     def has_issues(self) -> bool:
@@ -275,39 +277,47 @@ def check_grammar(
 # LLM structure check (OpenAI-compatible API)
 # ---------------------------------------------------------------------------
 
-STRUCTURE_PROMPT = """\
-You are a senior software engineer reviewing a git commit message.
-
-Evaluate the commit message below and return a JSON object with exactly these keys:
-- "issues": a list of short strings describing problems (empty list if none)
-- "score": an integer 1-10 (10 = perfect)
-
-Check for:
-1. Does the subject line summarise WHAT changed? (imperative mood preferred)
-2. Is there a body that explains WHY the change was made (motivation / context)?
-   A one-line fix like "Fix typo" is acceptable — but non-trivial changes need a body.
-3. Is the subject <= 72 characters?
-4. Is the subject separated from the body by a blank line (if a body exists)?
-5. Does the message avoid vague wording like "fix stuff", "updates", "misc changes"?
-
-Return ONLY the JSON object, no markdown fences.
-
-Commit message:
-\"\"\"
-{message}
-\"\"\"
-"""
+SYSTEM_PROMPT = (
+    "You are a git commit message reviewer. Your task is to evaluate if a "
+    "commit message explains the WHY behind the change, not just the WHAT.\n"
+    "\n"
+    "A good commit message should:\n"
+    "- Explain the reason for the change\n"
+    "- Describe the problem being solved or the benefit being added\n"
+    "- Provide context for future developers\n"
+    "\n"
+    "A poor commit message only describes what was changed without explaining why.\n"
+    "\n"
+    "Analyze the commit message and respond with a JSON object containing:\n"
+    '- "explains_why": boolean - true if the message explains why the change was made\n'
+    '- "score": number from 0-10 - how well it explains the why (10 being excellent)\n'
+    '- "feedback": string - specific feedback on how to improve the message\n'
+    '- "suggestion": string or null - a suggested rewrite if score < 7, otherwise null\n'
+    "\n"
+    "Be strict but fair. Most commit messages fail to explain why."
+)
 
 
-def llm_chat(prompt: str, model: str, api_base: str, api_key: str = "") -> str:
+def llm_chat(
+    user_message: str,
+    model: str,
+    api_base: str,
+    api_key: str = "",
+    system_prompt: str = "",
+) -> str:
     """Send a chat completion request to an OpenAI-compatible API and return the response text."""
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
 
+    messages: list[dict] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": user_message})
+
     payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": messages,
         "temperature": 0.1,
     }
 
@@ -321,23 +331,35 @@ def llm_chat(prompt: str, model: str, api_base: str, api_key: str = "") -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def check_structure(message: str, model: str, api_base: str, api_key: str = "") -> list[str]:
-    """Use an LLM to evaluate commit message structure."""
-    prompt = STRUCTURE_PROMPT.format(message=message)
+def _parse_llm_json(text: str) -> dict:
+    """Strip optional markdown fences and parse JSON from an LLM response."""
+    text = text.strip()
+    if text.startswith("```"):
+        text = "\n".join(text.split("\n")[1:])
+    if text.endswith("```"):
+        text = "\n".join(text.split("\n")[:-1])
+    return json.loads(text)
 
+
+def check_structure(message: str, model: str, api_base: str, api_key: str = "") -> dict:
+    """Use an LLM to evaluate whether a commit message explains *why*.
+
+    Returns a dict with keys: explains_why, score, feedback, suggestion.
+    On failure returns a dict with feedback containing the error.
+    """
     try:
-        text = llm_chat(prompt, model, api_base, api_key).strip()
-
-        # Strip markdown fences if the model wraps them
-        if text.startswith("```"):
-            text = "\n".join(text.split("\n")[1:])
-        if text.endswith("```"):
-            text = "\n".join(text.split("\n")[:-1])
-        data = json.loads(text)
-        return data.get("issues", [])
+        text = llm_chat(
+            message, model, api_base, api_key, system_prompt=SYSTEM_PROMPT
+        )
+        return _parse_llm_json(text)
     except Exception as exc:
         print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
-        return [f"LLM analysis error: {exc}"]
+        return {
+            "explains_why": False,
+            "score": 0,
+            "feedback": f"LLM analysis error: {exc}",
+            "suggestion": None,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -379,9 +401,14 @@ def print_report(results: list[CommitIssue]) -> None:
                 print(f"    - {gi['message']}{suggestion}  ({gi['rule']})")
 
         if r.structure_issues:
-            print(f"  {YELLOW}Structure:{RESET}")
+            print(f"  {YELLOW}Feedback:{RESET}")
             for si in r.structure_issues:
                 print(f"    - {si}")
+            if r.score is not None:
+                print(f"  Score: {r.score}/10")
+            if r.suggestion:
+                print(f"  {YELLOW}Suggested rewrite:{RESET}")
+                print(f"    {r.suggestion}")
 
         print()
 
@@ -529,7 +556,14 @@ def main(argv: list[str] | None = None) -> int:
 
         # Structure check
         if not args.grammar_only:
-            ci.structure_issues = check_structure(message, args.model, args.api_base, args.api_key)
+            result = check_structure(message, args.model, args.api_base, args.api_key)
+            ci.score = result.get("score")
+            ci.suggestion = result.get("suggestion")
+            feedback = result.get("feedback", "")
+            if feedback:
+                ci.structure_issues = [feedback]
+            if not result.get("explains_why", True) and not feedback:
+                ci.structure_issues = ["Commit message does not explain why the change was made"]
 
         results.append(ci)
 

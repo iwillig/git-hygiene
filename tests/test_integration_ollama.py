@@ -60,22 +60,14 @@ class TestOllamaStructureCheck:
     """Run the real structure-check prompt against a local Ollama model."""
 
     def _check(self, model: str, api_base: str, message: str) -> dict:
-        """Send the structure prompt and parse the JSON response."""
-        from lint_local import STRUCTURE_PROMPT, llm_chat
+        """Send the commit message with the system prompt and parse the JSON response."""
+        from lint_local import SYSTEM_PROMPT, llm_chat, _parse_llm_json
 
-        prompt = STRUCTURE_PROMPT.format(message=message)
-        text = llm_chat(prompt, model, api_base).strip()
-
-        # Strip markdown fences
-        if text.startswith("```"):
-            text = "\n".join(text.split("\n")[1:])
-        if text.endswith("```"):
-            text = "\n".join(text.split("\n")[:-1])
-
-        return json.loads(text)
+        text = llm_chat(message, model, api_base, system_prompt=SYSTEM_PROMPT)
+        return _parse_llm_json(text)
 
     def test_good_commit(self, ollama_model, api_base):
-        """A well-formed commit should get few/no issues and a high score."""
+        """A well-formed commit that explains why should score high."""
         result = self._check(
             ollama_model,
             api_base,
@@ -84,48 +76,56 @@ class TestOllamaStructureCheck:
             "attacks. This adds a 5-request-per-minute limit per IP address using\n"
             "Redis as the backing store.",
         )
-        assert "issues" in result
+        assert "explains_why" in result
         assert "score" in result
-        assert isinstance(result["issues"], list)
+        assert "feedback" in result
+        assert result["explains_why"] is True
         assert result["score"] >= 6
 
     def test_vague_commit(self, ollama_model, api_base):
-        """A vague one-word commit should be flagged."""
+        """A vague one-word commit should be flagged as not explaining why."""
         result = self._check(ollama_model, api_base, "updates")
-        assert "issues" in result
-        assert len(result["issues"]) > 0
+        assert "explains_why" in result
+        assert result["explains_why"] is False
+        assert result["score"] <= 5
 
     def test_returns_valid_json(self, ollama_model, api_base):
         """Even for edge cases the model should return parseable JSON."""
         result = self._check(ollama_model, api_base, "fix stuff")
         assert isinstance(result, dict)
-        assert "issues" in result
+        assert "explains_why" in result
         assert "score" in result
+        assert "feedback" in result
+        assert "suggestion" in result
 
 
 @pytest.mark.ollama
 class TestOllamaEndToEnd:
     """End-to-end: run lint_local.check_structure with a real model."""
 
-    def test_check_structure_returns_list(self, ollama_model, api_base):
-        """check_structure should return a list of strings."""
+    def test_check_structure_returns_dict(self, ollama_model, api_base):
+        """check_structure should return a dict with the expected keys."""
         from lint_local import check_structure
 
-        issues = check_structure("misc changes", ollama_model, api_base)
-        assert isinstance(issues, list)
-        assert len(issues) >= 1
-        assert all(isinstance(i, str) for i in issues)
+        result = check_structure("misc changes", ollama_model, api_base)
+        assert isinstance(result, dict)
+        assert "explains_why" in result
+        assert "score" in result
+        assert "feedback" in result
+        # A vague commit should not explain why
+        assert result["explains_why"] is False
 
     def test_check_structure_clean_commit(self, ollama_model, api_base):
-        """A good commit should return few or no issues."""
+        """A good commit should explain why and score high."""
         from lint_local import check_structure
 
-        issues = check_structure(
+        result = check_structure(
             "Refactor user authentication module\n\n"
             "The previous implementation mixed session management with password\n"
             "hashing. This separates concerns to improve testability.",
             ollama_model,
             api_base,
         )
-        assert isinstance(issues, list)
-        assert len(issues) <= 2
+        assert isinstance(result, dict)
+        assert result["explains_why"] is True
+        assert result["score"] >= 6

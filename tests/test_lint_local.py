@@ -198,6 +198,25 @@ class TestLlmChatLocal:
         call_url = mock_post.call_args[0][0]
         assert call_url == "http://localhost:11434/v1/chat/completions"
 
+    def test_system_prompt_included(self):
+        """System prompt is sent as the first message."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_local.requests.post", return_value=mock_resp) as mock_post:
+            lint_local.llm_chat(
+                "commit msg", "qwen2.5:0.5b", "http://localhost:11434/v1",
+                system_prompt="You are a reviewer.",
+            )
+
+        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
+        assert len(payload["messages"]) == 2
+        assert payload["messages"][0]["role"] == "system"
+        assert payload["messages"][1]["role"] == "user"
+
 
 # ---------------------------------------------------------------------------
 # check_structure (local version)
@@ -205,25 +224,47 @@ class TestLlmChatLocal:
 
 
 class TestCheckStructureLocal:
-    def test_returns_issues_from_llm(self):
-        """LLM response with issues is parsed correctly."""
-        llm_response = json.dumps({"issues": ["Missing body"], "score": 5})
+    def test_good_commit(self):
+        """LLM response for a good commit is parsed correctly."""
+        llm_response = json.dumps({
+            "explains_why": True, "score": 9,
+            "feedback": "Clear motivation provided.", "suggestion": None,
+        })
         with patch("lint_local.llm_chat", return_value=llm_response):
-            issues = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert issues == ["Missing body"]
+            result = lint_local.check_structure("Fix typo\n\nThe URL had a trailing slash.", "qwen2.5:0.5b", "http://localhost:11434/v1")
+            assert result["explains_why"] is True
+            assert result["score"] == 9
 
-    def test_no_issues(self):
-        llm_response = json.dumps({"issues": [], "score": 9})
+    def test_poor_commit(self):
+        """LLM flags a vague commit."""
+        llm_response = json.dumps({
+            "explains_why": False, "score": 2,
+            "feedback": "Does not explain why.", "suggestion": "Describe the reason.",
+        })
         with patch("lint_local.llm_chat", return_value=llm_response):
-            issues = lint_local.check_structure("Fix typo", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert issues == []
+            result = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
+            assert result["explains_why"] is False
+            assert result["suggestion"] is not None
 
-    def test_error_returns_error_string(self):
-        """If the model call fails, an error string is returned."""
+    def test_error_returns_error_dict(self):
+        """If the model call fails, an error dict is returned."""
         with patch("lint_local.llm_chat", side_effect=RuntimeError("boom")):
-            issues = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert len(issues) == 1
-            assert "boom" in issues[0]
+            result = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
+            assert result["explains_why"] is False
+            assert result["score"] == 0
+            assert "boom" in result["feedback"]
+
+    def test_system_prompt_is_used(self):
+        """check_structure sends the system prompt."""
+        llm_response = json.dumps({
+            "explains_why": True, "score": 8,
+            "feedback": "Good.", "suggestion": None,
+        })
+        with patch("lint_local.llm_chat", return_value=llm_response) as mock_chat:
+            lint_local.check_structure("some commit", "qwen2.5:0.5b", "http://localhost:11434/v1")
+
+        assert "system_prompt" in mock_chat.call_args.kwargs
+        assert "explains the WHY" in mock_chat.call_args.kwargs["system_prompt"]
 
 
 # ---------------------------------------------------------------------------
@@ -296,13 +337,24 @@ class TestMainLocal:
             {"sha": "ccc333", "message": "stuff"},
         ]
 
-    def test_main_skips_merge_commits(self, capsys):
-        llm_response = json.dumps({"issues": [], "score": 9})
+    def _good_response(self):
+        return json.dumps({
+            "explains_why": True, "score": 9,
+            "feedback": "Good commit.", "suggestion": None,
+        })
 
+    def _bad_response(self):
+        return json.dumps({
+            "explains_why": False, "score": 2,
+            "feedback": "Does not explain why the change was made.",
+            "suggestion": "stuff\n\nExplain the reason here.",
+        })
+
+    def test_main_skips_merge_commits(self, capsys):
         with (
             patch("lint_local.git_log", return_value=self._mock_commits()),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=llm_response),
+            patch("lint_local.llm_chat", return_value=self._good_response()),
         ):
             lint_local.main(["--last", "3"])
 
@@ -323,36 +375,39 @@ class TestMainLocal:
         mock_structure.assert_not_called()
 
     def test_main_structure_only_skips_grammar(self):
-        llm_response = json.dumps({"issues": [], "score": 9})
-
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo"}]),
             patch("lint_local.check_grammar") as mock_grammar,
-            patch("lint_local.llm_chat", return_value=llm_response),
+            patch("lint_local.llm_chat", return_value=self._good_response()),
         ):
             lint_local.main(["--structure-only"])
 
         mock_grammar.assert_not_called()
 
     def test_main_returns_1_on_issues(self):
-        llm_response = json.dumps({"issues": ["Subject is vague"], "score": 3})
-
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "stuff"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=llm_response),
+            patch("lint_local.llm_chat", return_value=self._bad_response()),
         ):
             rc = lint_local.main(["--last", "1"])
 
         assert rc == 1
 
     def test_main_returns_0_when_clean(self):
-        llm_response = json.dumps({"issues": [], "score": 10})
-
+        # A good response has feedback but explains_why=True, so no structure_issues
+        # unless feedback is non-empty. We need to check: main() puts feedback in
+        # structure_issues, so a "clean" commit still has feedback text but score >= 7
+        # and explains_why=True. The has_issues check depends on structure_issues being non-empty.
+        # Let's return an empty-feedback response for a truly clean result.
+        clean = json.dumps({
+            "explains_why": True, "score": 10,
+            "feedback": "", "suggestion": None,
+        })
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo in README"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=llm_response),
+            patch("lint_local.llm_chat", return_value=clean),
         ):
             rc = lint_local.main(["--last", "1"])
 
