@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  # ── Unit tests ─────────────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          pip install pipenv
+          pipenv install --dev --deploy
+
+      - name: Run tests
+        run: pipenv run pytest tests/ -v --ignore=tests/test_integration_mlx.py
+
+  # ── Dogfood: run git-hygiene on its own commits (local MLX model) ─────
+  lint-commits:
+    name: Git Hygiene (dogfood)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    needs: test  # only lint if tests pass
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Git Hygiene on this PR
+        uses: ./  # use the action from this repo
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          use-local-model: "true"
+          llm-model: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+          fail-on-error: "false"  # don't block PRs while we're tuning

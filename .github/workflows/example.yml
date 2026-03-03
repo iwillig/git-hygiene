@@ -1,0 +1,46 @@
+# Example workflow — copy this into your repo's .github/workflows/
+name: Git Hygiene
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write  # needed to post PR comments
+
+jobs:
+  # ── Option A: Local MLX model (no API key needed) ──────────────────────
+  # Runs a small LLM directly on the GitHub Actions runner via mlx-lm.
+  # Zero cost, fully private — no data leaves the runner.
+  # Trade-off: CPU inference is slower (~30-60s per commit with the 0.5B model).
+
+  lint-commits-local:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Git Hygiene (local MLX model)
+        uses: shortcut/git-hygiene@main
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          use-local-model: "true"
+          llm-model: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"  # 278 MB, fastest
+
+  # ── Option B: Remote API model ─────────────────────────────────────────
+  # Uses a cloud LLM provider (OpenAI, Anthropic, etc.).
+  # Faster, but requires an API key secret.
+
+  # lint-commits-remote:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #
+  #     - name: Run Git Hygiene (remote model)
+  #       uses: shortcut/git-hygiene@main
+  #       with:
+  #         github-token: ${{ secrets.GITHUB_TOKEN }}
+  #         llm-model: "gpt-4o-mini"
+  #         llm-api-key: ${{ secrets.OPENAI_API_KEY }}
