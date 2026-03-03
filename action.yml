@@ -70,16 +70,17 @@ runs:
         if [ "${{ inputs.use-local-model }}" = "true" ]; then
           echo "📦 Installing mlx-lm (CPU) and llm-mlx for local model inference…"
           pip install "mlx-lm[cpu]" llm-mlx
-          # MLX CPU backend JIT-compiles C++ kernels at runtime.
-          # g++-13 (default on Ubuntu 24.04) has a _Float128 typedef conflict
-          # that breaks compilation. g++-12 works. See: https://github.com/ml-explore/mlx/issues/2281
-          if command -v g++-12 &>/dev/null; then
-            echo "🔧 Setting CXX=g++-12 to work around MLX g++-13 _Float128 bug"
-            echo "CXX=g++-12" >> "$GITHUB_ENV"
-          elif [ "$(uname)" = "Linux" ]; then
-            echo "🔧 Installing g++-12 to work around MLX g++-13 _Float128 bug"
-            sudo apt-get update -qq && sudo apt-get install -y -qq g++-12
-            echo "CXX=g++-12" >> "$GITHUB_ENV"
+          # MLX CPU backend JIT-compiles C++ kernels at runtime and hardcodes
+          # "g++ -std=c++17 -O3 -Wall -fPIC -shared" (ignores $CXX / $CXXFLAGS).
+          # g++-13 (Ubuntu 24.04 default) has a _Float128 typedef conflict.
+          # Fix: replace /usr/bin/g++ with a wrapper that adds -fpermissive.
+          # See: https://github.com/ml-explore/mlx/issues/2281
+          if [ "$(uname)" = "Linux" ]; then
+            echo "🔧 Installing g++ wrapper with -fpermissive for MLX _Float128 bug"
+            REAL_GPP=$(readlink -f "$(which g++)")
+            sudo mv /usr/bin/g++ /usr/bin/g++-original 2>/dev/null || true
+            printf '#!/bin/bash\nexec "%s" -fpermissive "$@"\n' "$REAL_GPP" | sudo tee /usr/bin/g++ > /dev/null
+            sudo chmod +x /usr/bin/g++
           fi
         fi
 

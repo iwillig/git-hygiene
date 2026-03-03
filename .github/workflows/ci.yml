@@ -74,15 +74,15 @@ jobs:
 
       - name: Work around MLX g++-13 _Float128 bug
         run: |
-          # MLX CPU backend JIT-compiles C++ kernels. g++-13 (default on
-          # Ubuntu 24.04) has a _Float128 typedef conflict that breaks it.
+          # MLX hardcodes "g++ -std=c++17 -O3 -Wall -fPIC -shared" in its JIT
+          # compiler (ignores $CXX / $CXXFLAGS). g++-13 has a _Float128 typedef
+          # conflict. Fix: replace g++ with a wrapper that adds -fpermissive.
           # See: https://github.com/ml-explore/mlx/issues/2281
-          if command -v g++-12 &>/dev/null; then
-            echo "CXX=g++-12" >> "$GITHUB_ENV"
-          else
-            sudo apt-get update -qq && sudo apt-get install -y -qq g++-12
-            echo "CXX=g++-12" >> "$GITHUB_ENV"
-          fi
+          REAL_GPP=$(readlink -f "$(which g++)")
+          sudo mv /usr/bin/g++ /usr/bin/g++-original
+          printf '#!/bin/bash\nexec "%s" -fpermissive "$@"\n' "$REAL_GPP" | sudo tee /usr/bin/g++ > /dev/null
+          sudo chmod +x /usr/bin/g++
+          echo "Wrapper installed — g++ now delegates to $REAL_GPP with -fpermissive"
 
       - name: Lint commits pushed to main
         run: |
