@@ -70,6 +70,17 @@ runs:
         if [ "${{ inputs.use-local-model }}" = "true" ]; then
           echo "📦 Installing mlx-lm (CPU) and llm-mlx for local model inference…"
           pip install "mlx-lm[cpu]" llm-mlx
+          # MLX CPU backend JIT-compiles C++ kernels at runtime.
+          # g++-13 (default on Ubuntu 24.04) has a _Float128 typedef conflict
+          # that breaks compilation. g++-12 works. See: https://github.com/ml-explore/mlx/issues/2281
+          if command -v g++-12 &>/dev/null; then
+            echo "🔧 Setting CXX=g++-12 to work around MLX g++-13 _Float128 bug"
+            echo "CXX=g++-12" >> "$GITHUB_ENV"
+          elif [ "$(uname)" = "Linux" ]; then
+            echo "🔧 Installing g++-12 to work around MLX g++-13 _Float128 bug"
+            sudo apt-get update -qq && sudo apt-get install -y -qq g++-12
+            echo "CXX=g++-12" >> "$GITHUB_ENV"
+          fi
         fi
 
     - name: Run commit linter

@@ -72,6 +72,18 @@ jobs:
       - name: Install dependencies
         run: pip install llm requests "mlx-lm[cpu]" llm-mlx
 
+      - name: Work around MLX g++-13 _Float128 bug
+        run: |
+          # MLX CPU backend JIT-compiles C++ kernels. g++-13 (default on
+          # Ubuntu 24.04) has a _Float128 typedef conflict that breaks it.
+          # See: https://github.com/ml-explore/mlx/issues/2281
+          if command -v g++-12 &>/dev/null; then
+            echo "CXX=g++-12" >> "$GITHUB_ENV"
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq g++-12
+            echo "CXX=g++-12" >> "$GITHUB_ENV"
+          fi
+
       - name: Lint commits pushed to main
         run: |
           BEFORE="${{ github.event.before }}"
