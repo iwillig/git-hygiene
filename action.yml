@@ -15,23 +15,27 @@ inputs:
   llm-model:
     description: >
       LLM model to use for structure analysis.
-      For remote providers: e.g. gpt-4o-mini, claude-3-haiku-20240307.
-      For local MLX models: e.g. mlx-community/Qwen2.5-0.5B-Instruct-4bit.
+      For Ollama (local): e.g. qwen2.5:0.5b, tinyllama, phi3:mini.
+      For remote providers: e.g. gpt-4o-mini (requires llm-api-key).
     required: false
-    default: "gpt-4o-mini"
+    default: "qwen2.5:0.5b"
 
   llm-api-key:
-    description: "API key for a remote LLM provider. Not required when use-local-model is true."
+    description: "API key for a remote LLM provider (e.g. OpenAI). Not required when use-local-model is true."
     required: false
     default: ""
 
+  llm-api-base:
+    description: "Base URL for the LLM API (OpenAI-compatible). Defaults to local Ollama."
+    required: false
+    default: "http://localhost:11434/v1"
+
   use-local-model:
     description: >
-      Run the LLM locally on the GitHub Actions runner using mlx-lm (CPU).
-      No API key needed. Set llm-model to an MLX-compatible Hugging Face model.
-      Recommended: mlx-community/Qwen2.5-0.5B-Instruct-4bit (278 MB, fastest).
+      Run the LLM locally on the GitHub Actions runner using Ollama.
+      No API key needed. Set llm-model to an Ollama model name.
     required: false
-    default: "false"
+    default: "true"
 
   languagetool-url:
     description: "LanguageTool API base URL"
@@ -63,26 +67,20 @@ runs:
       with:
         python-version: "3.13"
 
-    - name: Install dependencies
+    - name: Install Python dependencies
+      shell: bash
+      run: pip install requests
+
+    - name: Set up Ollama
+      if: inputs.use-local-model == 'true'
+      uses: ai-action/setup-ollama@v2
+
+    - name: Pull Ollama model
+      if: inputs.use-local-model == 'true'
       shell: bash
       run: |
-        pip install llm requests
-        if [ "${{ inputs.use-local-model }}" = "true" ]; then
-          echo "Installing mlx-lm (CPU) and llm-mlx for local model inference..."
-          pip install "mlx-lm[cpu]" llm-mlx
-          # MLX CPU backend JIT-compiles C++ kernels at runtime and hardcodes
-          # "g++ -std=c++17 -O3 -Wall -fPIC -shared" (ignores $CXX / $CXXFLAGS).
-          # g++-13 (Ubuntu 24.04 default) has a _Float128 typedef conflict.
-          # Fix: replace /usr/bin/g++ with a wrapper that adds -fpermissive.
-          # See: https://github.com/ml-explore/mlx/issues/2281
-          if [ "$(uname)" = "Linux" ]; then
-            echo "Installing g++ wrapper with -fpermissive for MLX _Float128 bug"
-            REAL_GPP=$(readlink -f "$(which g++)")
-            sudo mv /usr/bin/g++ /usr/bin/g++-original 2>/dev/null || true
-            printf '#!/bin/bash\nexec "%s" -fpermissive "$@"\n' "$REAL_GPP" | sudo tee /usr/bin/g++ > /dev/null
-            sudo chmod +x /usr/bin/g++
-          fi
-        fi
+        echo "Pulling Ollama model: ${{ inputs.llm-model }}"
+        ollama pull ${{ inputs.llm-model }}
 
     - name: Run commit linter
       shell: bash
@@ -90,6 +88,7 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         LLM_MODEL: ${{ inputs.llm-model }}
         LLM_API_KEY: ${{ inputs.llm-api-key }}
+        LLM_API_BASE: ${{ inputs.llm-api-base }}
         USE_LOCAL_MODEL: ${{ inputs.use-local-model }}
         LANGUAGETOOL_URL: ${{ inputs.languagetool-url }}
         LANGUAGETOOL_LANGUAGE: ${{ inputs.languagetool-language }}

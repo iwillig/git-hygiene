@@ -11,10 +11,7 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ── Unit tests (push + PR) ────────────────────────────────────────────
-  # Only needs the core packages + pytest.  We skip llm-mlx/mlx-lm here
-  # because the default mlx package pulls in mlx-metal which is macOS-only.
-  # All MLX-touching code paths are mocked in the unit tests anyway.
+  # -- Unit tests (push + PR) ------------------------------------------------
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -28,12 +25,12 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: pip install llm requests pytest
+        run: pip install requests pytest
 
       - name: Run tests
-        run: pytest tests/ -v --ignore=tests/test_integration_mlx.py
+        run: pytest tests/ -v --ignore=tests/test_integration_ollama.py
 
-  # ── Dogfood on PR: lint PR commits, post comment ──────────────────────
+  # -- Dogfood on PR: lint PR commits, post comment --------------------------
   lint-pr:
     name: Lint PR Commits
     runs-on: ubuntu-latest
@@ -48,10 +45,10 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "true"
-          llm-model: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+          llm-model: "qwen2.5:0.5b"
           fail-on-error: "false"
 
-  # ── Dogfood on push to main: lint the merged commits ──────────────────
+  # -- Dogfood on push to main: lint the merged commits ----------------------
   lint-push:
     name: Lint Pushed Commits
     runs-on: ubuntu-latest
@@ -61,7 +58,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # Fetch enough history to cover the pushed commits
           fetch-depth: 0
 
       - name: Set up Python
@@ -69,33 +65,24 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Install dependencies
-        run: pip install llm requests "mlx-lm[cpu]" llm-mlx
+      - name: Install Python dependencies
+        run: pip install requests
 
-      - name: Work around MLX g++-13 _Float128 bug
-        run: |
-          # MLX hardcodes "g++ -std=c++17 -O3 -Wall -fPIC -shared" in its JIT
-          # compiler (ignores $CXX / $CXXFLAGS). g++-13 has a _Float128 typedef
-          # conflict. Fix: replace g++ with a wrapper that adds -fpermissive.
-          # See: https://github.com/ml-explore/mlx/issues/2281
-          REAL_GPP=$(readlink -f "$(which g++)")
-          sudo mv /usr/bin/g++ /usr/bin/g++-original
-          printf '#!/bin/bash\nexec "%s" -fpermissive "$@"\n' "$REAL_GPP" | sudo tee /usr/bin/g++ > /dev/null
-          sudo chmod +x /usr/bin/g++
-          echo "Wrapper installed — g++ now delegates to $REAL_GPP with -fpermissive"
+      - name: Set up Ollama
+        uses: ai-action/setup-ollama@v2
+
+      - name: Pull model
+        run: ollama pull qwen2.5:0.5b
 
       - name: Lint commits pushed to main
         run: |
           BEFORE="${{ github.event.before }}"
           AFTER="${{ github.sha }}"
 
-          # On the very first push (new repo), before is all zeros — lint the last commit
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
             echo "First push -- linting HEAD commit only"
-            python lint_local.py --last 1 \
-              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
+            python lint_local.py --last 1 --model qwen2.5:0.5b
           else
             echo "Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
-            python lint_local.py --range "${BEFORE}..${AFTER}" \
-              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
+            python lint_local.py --range "${BEFORE}..${AFTER}" --model qwen2.5:0.5b
           fi

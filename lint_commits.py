@@ -3,7 +3,7 @@
 Git Hygiene — lint commit messages for grammar and structure quality.
 
 Grammar:      LanguageTool API
-Structure:    LLM library (any provider, including local MLX models)
+Structure:    LLM via OpenAI-compatible API (Ollama local or remote provider)
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ import re
 import sys
 from dataclasses import dataclass, field
 
-import llm
 import requests
 
 # ---------------------------------------------------------------------------
@@ -24,9 +23,10 @@ import requests
 GITHUB_TOKEN = os.environ["GITHUB_TOKEN"]
 REPO = os.environ["REPO"]  # owner/repo
 PR_NUMBER = os.environ["PR_NUMBER"]
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "false").lower() == "true"
+LLM_API_BASE = os.environ.get("LLM_API_BASE", "http://localhost:11434/v1")
+USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "true").lower() == "true"
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2")
 LANGUAGETOOL_LANGUAGE = os.environ.get("LANGUAGETOOL_LANGUAGE", "en-US")
 IGNORE_PATTERNS_RAW = os.environ.get("IGNORE_PATTERNS", "")
@@ -136,37 +136,7 @@ def check_grammar(text: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LLM model loading
-# ---------------------------------------------------------------------------
-
-
-def _load_model(model_name: str) -> llm.Model:
-    """
-    Load an LLM model.
-
-    1. Try the standard llm plugin registry (OpenAI, Anthropic, etc.)
-    2. If that fails and we're in local mode, try direct MlxModel instantiation
-       via the llm-mlx plugin (no pre-registration needed).
-    """
-    try:
-        return llm.get_model(model_name)
-    except llm.UnknownModelError:
-        pass
-
-    # Fall back to direct MlxModel instantiation for local MLX models
-    try:
-        from llm_mlx import MlxModel
-        return MlxModel(model_name)
-    except ImportError:
-        raise RuntimeError(
-            f"Model '{model_name}' is not registered with llm and the llm-mlx "
-            "plugin is not installed.  Either set use-local-model: true (which "
-            "installs llm-mlx automatically), or use a registered model name."
-        )
-
-
-# ---------------------------------------------------------------------------
-# LLM structure check
+# LLM structure check (OpenAI-compatible API)
 # ---------------------------------------------------------------------------
 
 STRUCTURE_PROMPT = """\
@@ -180,7 +150,7 @@ Check for:
 1. Does the subject line summarise WHAT changed? (imperative mood preferred)
 2. Is there a body that explains WHY the change was made (motivation / context)?
    A one-line fix like "Fix typo" is acceptable — but non-trivial changes need a body.
-3. Is the subject ≤ 72 characters?
+3. Is the subject <= 72 characters?
 4. Is the subject separated from the body by a blank line (if a body exists)?
 5. Does the message avoid vague wording like "fix stuff", "updates", "misc changes"?
 
@@ -193,21 +163,36 @@ Commit message:
 """
 
 
+def llm_chat(prompt: str, model: str, api_base: str, api_key: str = "") -> str:
+    """Send a chat completion request to an OpenAI-compatible API and return the response text."""
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+    }
+
+    resp = requests.post(
+        f"{api_base}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 def check_structure(message: str) -> list[str]:
     """Use an LLM to evaluate commit message structure. Returns a list of issue strings."""
-    # Configure API key for remote models.  The `llm` library reads keys
-    # from its own key store, but in CI we inject them via env vars.
-    if LLM_API_KEY:
-        os.environ.setdefault("OPENAI_API_KEY", LLM_API_KEY)
-        os.environ.setdefault("ANTHROPIC_API_KEY", LLM_API_KEY)
-
     prompt = STRUCTURE_PROMPT.format(message=message)
 
     try:
-        model = _load_model(LLM_MODEL)
-        response = model.prompt(prompt)
-        text = response.text().strip()
-        # Strip markdown fences if the model wraps them anyway
+        text = llm_chat(prompt, LLM_MODEL, LLM_API_BASE, LLM_API_KEY).strip()
+
+        # Strip markdown fences if the model wraps them
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:])
         if text.endswith("```"):
@@ -247,7 +232,7 @@ def build_report(results: list[CommitIssue]) -> str:
             for gi in r.grammar_issues:
                 suggestion = ""
                 if gi["replacements"]:
-                    suggestion = f' → try: *{", ".join(gi["replacements"])}*'
+                    suggestion = f' -> try: *{", ".join(gi["replacements"])}*'
                 lines.append(f'- {gi["message"]}{suggestion}  (`{gi["rule"]}`)')
             lines.append("")
 
@@ -269,9 +254,9 @@ def build_report(results: list[CommitIssue]) -> str:
 
 def main() -> int:
     if USE_LOCAL_MODEL:
-        print(f"Using local MLX model: {LLM_MODEL}")
+        print(f"Using local Ollama model: {LLM_MODEL}")
     else:
-        print(f"Using remote model: {LLM_MODEL}")
+        print(f"Using remote model: {LLM_MODEL} at {LLM_API_BASE}")
 
     print(f"Fetching commits for PR #{PR_NUMBER} in {REPO} ...")
     commits = fetch_pr_commits()

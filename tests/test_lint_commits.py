@@ -1,4 +1,4 @@
-"""Unit tests for lint_commits.py — grammar & structure helpers."""
+"""Unit tests for lint_commits.py -- grammar & structure helpers."""
 
 from __future__ import annotations
 
@@ -18,7 +18,6 @@ os.environ.setdefault("GITHUB_TOKEN", "test-token")
 os.environ.setdefault("REPO", "owner/repo")
 os.environ.setdefault("PR_NUMBER", "1")
 
-import llm  # noqa: E402
 import lint_commits  # noqa: E402
 
 
@@ -29,7 +28,7 @@ import lint_commits  # noqa: E402
 
 class TestCheckGrammar:
     def test_no_issues(self):
-        """LanguageTool returns no matches → empty list."""
+        """LanguageTool returns no matches -> empty list."""
         mock_resp = MagicMock()
         mock_resp.json.return_value = {"matches": []}
         mock_resp.raise_for_status = MagicMock()
@@ -59,38 +58,57 @@ class TestCheckGrammar:
 
 
 # ---------------------------------------------------------------------------
-# _load_model
+# llm_chat
 # ---------------------------------------------------------------------------
 
 
-class TestLoadModel:
-    def test_returns_registered_model(self):
-        """Standard llm.get_model path works for registered models."""
-        mock_model = MagicMock()
-        with patch("lint_commits.llm.get_model", return_value=mock_model):
-            result = lint_commits._load_model("gpt-4o-mini")
-            assert result is mock_model
+class TestLlmChat:
+    def test_sends_correct_request(self):
+        """Verify the request payload sent to the OpenAI-compatible API."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "Hello!"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
 
-    def test_falls_back_to_mlx_model(self):
-        """When llm.get_model fails, fall back to MlxModel."""
-        mock_model = MagicMock()
-        mock_mlx_module = MagicMock()
-        mock_mlx_module.MlxModel.return_value = mock_model
+        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
+            result = lint_commits.llm_chat("Hi", "qwen2.5:0.5b", "http://localhost:11434/v1")
 
-        with patch("lint_commits.llm.get_model", side_effect=llm.UnknownModelError("nope")):
-            with patch.dict("sys.modules", {"llm_mlx": mock_mlx_module}):
-                result = lint_commits._load_model("mlx-community/Qwen2.5-0.5B-Instruct-4bit")
-                assert result is mock_model
-                mock_mlx_module.MlxModel.assert_called_once_with(
-                    "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-                )
+        assert result == "Hello!"
+        call_kwargs = mock_post.call_args
+        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
+        assert payload["model"] == "qwen2.5:0.5b"
+        assert payload["messages"][0]["content"] == "Hi"
 
-    def test_raises_when_no_mlx_plugin(self):
-        """RuntimeError if model unknown and llm-mlx not installed."""
-        with patch("lint_commits.llm.get_model", side_effect=llm.UnknownModelError("nope")):
-            with patch.dict("sys.modules", {"llm_mlx": None}):
-                with pytest.raises(RuntimeError, match="not registered"):
-                    lint_commits._load_model("mlx-community/some-model")
+    def test_includes_auth_header(self):
+        """API key is passed as a Bearer token."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
+            lint_commits.llm_chat("Hi", "gpt-4o-mini", "https://api.openai.com/v1", "sk-test")
+
+        call_kwargs = mock_post.call_args
+        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
+        assert headers["Authorization"] == "Bearer sk-test"
+
+    def test_no_auth_header_when_empty(self):
+        """No Authorization header when api_key is empty."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "ok"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
+            lint_commits.llm_chat("Hi", "qwen2.5:0.5b", "http://localhost:11434/v1", "")
+
+        call_kwargs = mock_post.call_args
+        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
+        assert "Authorization" not in headers
 
 
 # ---------------------------------------------------------------------------
@@ -101,45 +119,30 @@ class TestLoadModel:
 class TestCheckStructure:
     def test_clean_response(self):
         """LLM returns clean JSON with issues."""
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps(
-            {"issues": ["Subject is vague"], "score": 4}
-        )
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        with patch("lint_commits._load_model", return_value=mock_model):
+        llm_response = json.dumps({"issues": ["Subject is vague"], "score": 4})
+        with patch("lint_commits.llm_chat", return_value=llm_response):
             issues = lint_commits.check_structure("updates")
             assert issues == ["Subject is vague"]
 
     def test_no_issues(self):
         """LLM finds no problems."""
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps({"issues": [], "score": 9})
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        with patch("lint_commits._load_model", return_value=mock_model):
+        llm_response = json.dumps({"issues": [], "score": 9})
+        with patch("lint_commits.llm_chat", return_value=llm_response):
             issues = lint_commits.check_structure(
                 "Add user avatar upload\n\nUsers requested the ability to upload custom avatars."
             )
             assert issues == []
 
     def test_markdown_fenced_response(self):
-        """LLM wraps response in markdown fences — still parsed."""
-        raw = '```json\n{"issues": ["Missing body"], "score": 5}\n```'
-        mock_response = MagicMock()
-        mock_response.text.return_value = raw
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        with patch("lint_commits._load_model", return_value=mock_model):
+        """LLM wraps response in markdown fences -- still parsed."""
+        llm_response = '```json\n{"issues": ["Missing body"], "score": 5}\n```'
+        with patch("lint_commits.llm_chat", return_value=llm_response):
             issues = lint_commits.check_structure("Fix bug")
             assert issues == ["Missing body"]
 
     def test_llm_failure(self):
         """If the LLM call explodes, we get an error string back."""
-        with patch("lint_commits._load_model", side_effect=RuntimeError("timeout")):
+        with patch("lint_commits.llm_chat", side_effect=RuntimeError("timeout")):
             issues = lint_commits.check_structure("something")
             assert len(issues) == 1
             assert "timeout" in issues[0]

@@ -2,17 +2,18 @@
 
 A GitHub Action that lints git commit messages on pull requests for:
 
-- **Grammar issues** — via the [LanguageTool](https://languagetool.org/) API
-- **Structure quality** — via an LLM (checks that commits explain *why*, not just *what*)
+- **Grammar issues** -- via the [LanguageTool](https://languagetool.org/) API
+- **Structure quality** -- via an LLM (checks that commits explain *why*, not just *what*)
 
 When issues are found the action **posts a PR comment** summarising them and **fails the check**.
 
 ## Quick Start
 
-### Option A: Local model — no API key needed (recommended)
+### Option A: Local model -- no API key needed (recommended)
 
-Run a small LLM directly on the GitHub Actions runner. Zero cost, fully
-private — no data ever leaves the runner.
+Run a small LLM directly on the GitHub Actions runner via
+[Ollama](https://ollama.com/). Zero cost, fully private -- no data ever
+leaves the runner.
 
 ```yaml
 name: Git Hygiene
@@ -34,21 +35,17 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "true"
-          llm-model: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
+          llm-model: "qwen2.5:0.5b"
 ```
 
-This installs [mlx-lm](https://github.com/ml-explore/mlx-lm) (CPU backend)
-and the [llm-mlx](https://github.com/simonw/llm-mlx) plugin, downloads the
-model (~278 MB), and runs inference on the runner. MLX supports Linux via its
-CPU backend, so this works on standard `ubuntu-latest` GitHub Actions runners.
-
-> **Performance note:** CPU inference on a 2-core runner takes roughly 30–60 s
-> per commit with the 0.5B model. For PRs with many commits, consider a remote
-> model or a [larger runner](https://docs.github.com/en/actions/using-github-hosted-runners/about-larger-runners).
+The action installs [Ollama](https://ollama.com/) via
+[setup-ollama](https://github.com/ai-action/setup-ollama), pulls the model,
+and runs inference locally. Works on `ubuntu-latest`, `macos-latest`, and
+`windows-latest` runners.
 
 ### Option B: Remote API model
 
-Uses a cloud LLM provider — faster, but requires an API key secret.
+Uses a cloud LLM provider -- faster, but requires an API key secret.
 
 ```yaml
 jobs:
@@ -59,7 +56,9 @@ jobs:
       - uses: shortcut/git-hygiene@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          use-local-model: "false"
           llm-model: "gpt-4o-mini"
+          llm-api-base: "https://api.openai.com/v1"
           llm-api-key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
@@ -68,22 +67,25 @@ jobs:
 | Input                   | Required | Default                              | Description                                                             |
 | ----------------------- | -------- | ------------------------------------ | ----------------------------------------------------------------------- |
 | `github-token`          | yes      | `${{ github.token }}`                | GitHub token (needs `pull-requests: write` for comments)                |
-| `use-local-model`       | no       | `false`                              | Run the LLM locally on the runner via mlx-lm (no API key needed)       |
-| `llm-model`             | no       | `gpt-4o-mini`                        | Model name — any [llm](https://llm.datasette.io/) model or MLX HF repo |
-| `llm-api-key`           | no*      | —                                    | API key for a remote LLM provider (*required unless `use-local-model`)  |
+| `use-local-model`       | no       | `true`                               | Run the LLM locally via Ollama (no API key needed)                     |
+| `llm-model`             | no       | `qwen2.5:0.5b`                       | Model name -- Ollama model or OpenAI-compatible model name             |
+| `llm-api-base`          | no       | `http://localhost:11434/v1`           | OpenAI-compatible API base URL                                         |
+| `llm-api-key`           | no       | --                                    | API key for a remote LLM provider (required when `use-local-model` is false) |
 | `languagetool-url`      | no       | `https://api.languagetool.org/v2`    | LanguageTool API base URL (point to self-hosted if desired)             |
 | `languagetool-language` | no       | `en-US`                              | Language code for grammar checking                                     |
-| `ignore-patterns`       | no       | `^Merge\s` / `^Revert\s`            | Newline-separated regexes — matching commit subjects are skipped       |
+| `ignore-patterns`       | no       | `^Merge\s` / `^Revert\s`            | Newline-separated regexes -- matching commit subjects are skipped      |
 | `fail-on-error`         | no       | `true`                               | Set to `false` to post a comment without failing the check             |
 
-### MLX Models for `use-local-model`
+### Ollama Models
 
-Any [mlx-community](https://huggingface.co/mlx-community) model works. Recommended for CI:
+Any model from the [Ollama library](https://ollama.com/library) works. Recommended for CI:
 
-| Model | Size | Speed (2-core runner) | Notes |
-|---|---|---|---|
-| `mlx-community/Qwen2.5-0.5B-Instruct-4bit` | 278 MB | ~30–60 s/commit | **Best for CI** — smallest, fastest |
-| `mlx-community/Llama-3.2-3B-Instruct-4bit` | 1.8 GB | ~2–5 min/commit | Better quality, needs more RAM |
+| Model | Size | Notes |
+|---|---|---|
+| `qwen2.5:0.5b` | 397 MB | **Best for CI** -- smallest, fastest |
+| `tinyllama` | 637 MB | Good quality for its size |
+| `phi3:mini` | 2.3 GB | Better quality, needs more RAM |
+| `llama3.2` | 2.0 GB | Strong general-purpose model |
 
 ## How It Works
 
@@ -104,32 +106,37 @@ plantuml -tpng docs/architecture.puml -o ../docs/
 
 1. A developer opens or updates a pull request.
 2. GitHub triggers the composite action (`action.yml`) on the runner.
-3. The action sets up Python, installs dependencies (and `mlx-lm[cpu]` + `llm-mlx` if `use-local-model` is enabled).
+3. The action sets up Python, installs `requests`, and (if `use-local-model` is enabled) installs Ollama and pulls the model.
 4. `lint_commits.py` fetches all PR commits via the GitHub API.
 5. For each commit (skipping those matching ignore patterns):
-   - **Grammar check** — sends the message to the LanguageTool API and collects spelling/grammar matches.
-   - **Structure check** — loads a model (local MLX or remote API) and prompts it to evaluate subject line, body, and overall quality. The response is parsed as JSON.
+   - **Grammar check** -- sends the message to the LanguageTool API and collects spelling/grammar matches.
+   - **Structure check** -- sends the message to the LLM via the OpenAI-compatible chat API (Ollama local or remote provider). The response is parsed as JSON.
 6. Results are aggregated into a Markdown report.
 7. The report is posted (or updated) as a PR comment.
 8. The action exits with code 1 (failing the check) if any issues were found and `fail-on-error` is true.
 
-## Using a Different Remote LLM Provider
+## Using a Remote LLM Provider
 
-The action uses Simon Willison's [llm](https://llm.datasette.io/) library which supports many providers:
+The action talks to any OpenAI-compatible API. Set `llm-api-base` and `llm-api-key`:
 
 **OpenAI:**
 ```yaml
-llm-model: "gpt-4o-mini"
-llm-api-key: ${{ secrets.OPENAI_API_KEY }}
-```
-
-**Anthropic** (install the plugin in a prior step):
-```yaml
-- run: pip install llm-anthropic
 - uses: shortcut/git-hygiene@main
   with:
-    llm-model: "claude-3-haiku-20240307"
-    llm-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+    use-local-model: "false"
+    llm-model: "gpt-4o-mini"
+    llm-api-base: "https://api.openai.com/v1"
+    llm-api-key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+**Any OpenAI-compatible provider** (Groq, Together, Fireworks, etc.):
+```yaml
+- uses: shortcut/git-hygiene@main
+  with:
+    use-local-model: "false"
+    llm-model: "llama-3.1-8b-instant"
+    llm-api-base: "https://api.groq.com/openai/v1"
+    llm-api-key: ${{ secrets.GROQ_API_KEY }}
 ```
 
 ## Self-Hosted LanguageTool
@@ -140,44 +147,50 @@ Run LanguageTool on your own infrastructure and point the action at it:
 languagetool-url: "https://lt.internal.example.com/v2"
 ```
 
-## Local Development (Apple Silicon)
+## Local Development
 
-You can run git-hygiene locally against your current git repo using MLX with
-full GPU acceleration on Apple Silicon — no API keys required.
+You can run git-hygiene locally against your current git repo using Ollama --
+no API keys required.
 
 ### Setup
 
 ```bash
-# Install dependencies (includes llm-mlx and mlx-lm)
-pipenv install --dev
+# Install Ollama (macOS)
+brew install ollama
 
-# Download a small MLX model (~278 MB)
-pipenv run llm mlx download-model mlx-community/Qwen2.5-0.5B-Instruct-4bit
+# Start the Ollama server
+ollama serve
+
+# Pull a model
+ollama pull qwen2.5:0.5b
+
+# Install Python dependencies
+pip install requests
 ```
 
 ### Run
 
 ```bash
-# Lint the last 5 commits with the default MLX model
-pipenv run python lint_local.py
+# Lint the last 5 commits
+python lint_local.py
 
 # Lint commits on a branch compared to main
-pipenv run python lint_local.py --range main..HEAD
+python lint_local.py --range main..HEAD
 
 # Lint the last 10 commits
-pipenv run python lint_local.py --last 10
+python lint_local.py --last 10
 
-# Use a specific MLX model
-pipenv run python lint_local.py --model mlx-community/Mistral-7B-Instruct-v0.3-4bit
+# Use a specific model
+python lint_local.py --model tinyllama
 
 # Only grammar check (no LLM)
-pipenv run python lint_local.py --grammar-only
+python lint_local.py --grammar-only
 
 # Only structure check (no LanguageTool)
-pipenv run python lint_local.py --structure-only
+python lint_local.py --structure-only
 
 # Use a remote model instead (e.g. OpenAI)
-pipenv run python lint_local.py --model gpt-4o-mini --api-key sk-...
+python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --api-key sk-...
 ```
 
 ### CLI Options
@@ -186,37 +199,30 @@ pipenv run python lint_local.py --model gpt-4o-mini --api-key sk-...
 |---|---|
 | `--range REV_RANGE` | Git revision range (e.g. `main..HEAD`) |
 | `--last N` | Number of recent commits to lint (default: 5) |
-| `--model MODEL` | LLM model name (default: `mlx-community/Llama-3.2-3B-Instruct-4bit`) |
-| `--api-key KEY` | API key for remote providers (not needed for local MLX models) |
+| `--model MODEL` | LLM model name (default: `qwen2.5:0.5b`) |
+| `--api-base URL` | OpenAI-compatible API base URL (default: `http://localhost:11434/v1`) |
+| `--api-key KEY` | API key for remote providers |
 | `--grammar-only` | Only run the grammar check |
 | `--structure-only` | Only run the LLM structure check |
 | `--languagetool-url URL` | Custom LanguageTool API URL |
 | `--language CODE` | Language for grammar checking (default: `en-US`) |
 | `--ignore-pattern REGEX` | Regex for subjects to skip (repeatable) |
 
-### Recommended Models (Local)
-
-| Model | Size | Notes |
-|---|---|---|
-| `mlx-community/Qwen2.5-0.5B-Instruct-4bit` | 278 MB | Fastest, good for quick checks |
-| `mlx-community/Llama-3.2-3B-Instruct-4bit` | 1.8 GB | Default, good balance |
-| `mlx-community/Mistral-7B-Instruct-v0.3-4bit` | 4 GB | Best quality |
-
 ## Development
 
 ```bash
 # Install dependencies
-pipenv install --dev
+pip install requests pytest
 
 # Run unit tests (mocked, fast)
-pipenv run pytest tests/ -v
+pytest tests/ -v
 
-# Run integration tests with a real local MLX model (requires Apple Silicon)
-pipenv run pytest tests/test_integration_mlx.py -v --run-mlx
+# Run integration tests with a real local Ollama model
+# (requires: ollama serve + ollama pull qwen2.5:0.5b)
+pytest tests/test_integration_ollama.py -v --run-ollama
 
 # Use a specific model for integration tests
-MLX_MODEL=mlx-community/Qwen2.5-0.5B-Instruct-4bit \
-    pipenv run pytest tests/test_integration_mlx.py -v --run-mlx
+OLLAMA_MODEL=tinyllama pytest tests/test_integration_ollama.py -v --run-ollama
 ```
 
 ## License

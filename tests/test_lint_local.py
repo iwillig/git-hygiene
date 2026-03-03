@@ -1,4 +1,4 @@
-"""Unit tests for lint_local.py — local CLI runner."""
+"""Unit tests for lint_local.py -- local CLI runner."""
 
 from __future__ import annotations
 
@@ -19,7 +19,6 @@ os.environ.setdefault("GITHUB_TOKEN", "test-token")
 os.environ.setdefault("REPO", "owner/repo")
 os.environ.setdefault("PR_NUMBER", "1")
 
-import llm  # noqa: E402
 import lint_local  # noqa: E402
 
 
@@ -111,88 +110,52 @@ class TestCheckGrammarLocal:
 
 
 # ---------------------------------------------------------------------------
-# check_structure (local version) — MLX model loading path
+# llm_chat (local version)
+# ---------------------------------------------------------------------------
+
+
+class TestLlmChatLocal:
+    def test_calls_ollama_api(self):
+        """Verify request is sent to the correct endpoint."""
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "choices": [{"message": {"content": "response text"}}]
+        }
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_local.requests.post", return_value=mock_resp) as mock_post:
+            result = lint_local.llm_chat("prompt", "qwen2.5:0.5b", "http://localhost:11434/v1")
+
+        assert result == "response text"
+        call_url = mock_post.call_args[0][0]
+        assert call_url == "http://localhost:11434/v1/chat/completions"
+
+
+# ---------------------------------------------------------------------------
+# check_structure (local version)
 # ---------------------------------------------------------------------------
 
 
 class TestCheckStructureLocal:
-    def test_uses_llm_get_model_first(self):
-        """Standard llm.get_model path when model is registered."""
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps({"issues": [], "score": 9})
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        with patch("lint_local._try_load_mlx_model", return_value=mock_model):
-            issues = lint_local.check_structure("Fix typo", "gpt-4o-mini")
-            assert issues == []
-
     def test_returns_issues_from_llm(self):
         """LLM response with issues is parsed correctly."""
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps(
-            {"issues": ["Missing body"], "score": 5}
-        )
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        with patch("lint_local._try_load_mlx_model", return_value=mock_model):
-            issues = lint_local.check_structure(
-                "stuff", "mlx-community/Llama-3.2-3B-Instruct-4bit"
-            )
+        llm_response = json.dumps({"issues": ["Missing body"], "score": 5})
+        with patch("lint_local.llm_chat", return_value=llm_response):
+            issues = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
             assert issues == ["Missing body"]
+
+    def test_no_issues(self):
+        llm_response = json.dumps({"issues": [], "score": 9})
+        with patch("lint_local.llm_chat", return_value=llm_response):
+            issues = lint_local.check_structure("Fix typo", "qwen2.5:0.5b", "http://localhost:11434/v1")
+            assert issues == []
 
     def test_error_returns_error_string(self):
         """If the model call fails, an error string is returned."""
-        with patch("lint_local._try_load_mlx_model", side_effect=RuntimeError("boom")):
-            issues = lint_local.check_structure("stuff", "mlx-community/some-model")
+        with patch("lint_local.llm_chat", side_effect=RuntimeError("boom")):
+            issues = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
             assert len(issues) == 1
             assert "boom" in issues[0]
-
-
-# ---------------------------------------------------------------------------
-# _try_load_mlx_model
-# ---------------------------------------------------------------------------
-
-
-class TestTryLoadMlxModel:
-    def test_returns_registered_model(self):
-        mock_model = MagicMock()
-        with patch("lint_local.llm.get_model", return_value=mock_model):
-            result = lint_local._try_load_mlx_model("gpt-4o-mini")
-            assert result is mock_model
-
-    def test_falls_back_to_mlx(self):
-        """When llm.get_model raises UnknownModelError, fall back to MlxModel."""
-        mock_model = MagicMock()
-
-        def fake_get_model(name):
-            raise llm.UnknownModelError(name)
-
-        # Mock at the _try_load_mlx_model level — patch the import inside the function
-        with patch("lint_local.llm.get_model", side_effect=fake_get_model):
-            # The function does a dynamic import of llm_mlx — mock that
-            mock_mlx_module = MagicMock()
-            mock_mlx_module.MlxModel.return_value = mock_model
-            with patch.dict("sys.modules", {"llm_mlx": mock_mlx_module}):
-                result = lint_local._try_load_mlx_model(
-                    "mlx-community/Llama-3.2-3B-Instruct-4bit"
-                )
-                assert result is mock_model
-                mock_mlx_module.MlxModel.assert_called_once_with(
-                    "mlx-community/Llama-3.2-3B-Instruct-4bit"
-                )
-
-    def test_raises_when_no_mlx_plugin(self):
-        """Raises RuntimeError if model unknown and llm-mlx not available."""
-        def fake_get_model(name):
-            raise llm.UnknownModelError(name)
-
-        with patch("lint_local.llm.get_model", side_effect=fake_get_model):
-            # Simulate llm_mlx not being installed
-            with patch.dict("sys.modules", {"llm_mlx": None}):
-                with pytest.raises(RuntimeError, match="not registered"):
-                    lint_local._try_load_mlx_model("mlx-community/some-model")
 
 
 # ---------------------------------------------------------------------------
@@ -208,7 +171,8 @@ class TestParseArgs:
         assert args.grammar_only is False
         assert args.structure_only is False
         assert args.model == lint_local.DEFAULT_MODEL
-        assert args.api_key is None
+        assert args.api_key == ""
+        assert args.api_base == lint_local.DEFAULT_API_BASE
 
     def test_range(self):
         args = lint_local.parse_args(["--range", "main..HEAD"])
@@ -227,12 +191,16 @@ class TestParseArgs:
         assert args.structure_only is True
 
     def test_custom_model(self):
-        args = lint_local.parse_args(["--model", "mlx-community/Mistral-7B-Instruct-v0.3-4bit"])
-        assert args.model == "mlx-community/Mistral-7B-Instruct-v0.3-4bit"
+        args = lint_local.parse_args(["--model", "tinyllama"])
+        assert args.model == "tinyllama"
 
     def test_api_key(self):
         args = lint_local.parse_args(["--api-key", "sk-test123"])
         assert args.api_key == "sk-test123"
+
+    def test_api_base(self):
+        args = lint_local.parse_args(["--api-base", "https://api.openai.com/v1"])
+        assert args.api_base == "https://api.openai.com/v1"
 
     def test_custom_ignore_patterns(self):
         args = lint_local.parse_args(["--ignore-pattern", "^WIP", "--ignore-pattern", "^fixup!"])
@@ -253,17 +221,12 @@ class TestMainLocal:
         ]
 
     def test_main_skips_merge_commits(self, capsys):
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps({"issues": [], "score": 9})
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
-
-        mock_grammar = MagicMock(return_value=[])
+        llm_response = json.dumps({"issues": [], "score": 9})
 
         with (
             patch("lint_local.git_log", return_value=self._mock_commits()),
-            patch("lint_local.check_grammar", mock_grammar),
-            patch("lint_local.llm.get_model", return_value=mock_model),
+            patch("lint_local.check_grammar", return_value=[]),
+            patch("lint_local.llm_chat", return_value=llm_response),
         ):
             lint_local.main(["--last", "3"])
 
@@ -284,47 +247,36 @@ class TestMainLocal:
         mock_structure.assert_not_called()
 
     def test_main_structure_only_skips_grammar(self):
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps({"issues": [], "score": 9})
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
+        llm_response = json.dumps({"issues": [], "score": 9})
 
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo"}]),
             patch("lint_local.check_grammar") as mock_grammar,
-            patch("lint_local.llm.get_model", return_value=mock_model),
+            patch("lint_local.llm_chat", return_value=llm_response),
         ):
             lint_local.main(["--structure-only"])
 
         mock_grammar.assert_not_called()
 
     def test_main_returns_1_on_issues(self):
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps(
-            {"issues": ["Subject is vague"], "score": 3}
-        )
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
+        llm_response = json.dumps({"issues": ["Subject is vague"], "score": 3})
 
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "stuff"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm.get_model", return_value=mock_model),
+            patch("lint_local.llm_chat", return_value=llm_response),
         ):
             rc = lint_local.main(["--last", "1"])
 
         assert rc == 1
 
     def test_main_returns_0_when_clean(self):
-        mock_response = MagicMock()
-        mock_response.text.return_value = json.dumps({"issues": [], "score": 10})
-        mock_model = MagicMock()
-        mock_model.prompt.return_value = mock_response
+        llm_response = json.dumps({"issues": [], "score": 10})
 
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo in README"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm.get_model", return_value=mock_model),
+            patch("lint_local.llm_chat", return_value=llm_response),
         ):
             rc = lint_local.main(["--last", "1"])
 

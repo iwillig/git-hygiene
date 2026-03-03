@@ -1,26 +1,28 @@
 """Shared pytest configuration."""
 
+import pytest
+
 
 def pytest_addoption(parser):
-    """Add --run-mlx CLI flag to pytest."""
     parser.addoption(
-        "--run-mlx",
+        "--run-ollama",
         action="store_true",
         default=False,
-        help="Run integration tests that require a local MLX model (Apple Silicon)",
+        help="Run integration tests that require a local Ollama server",
     )
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "mlx: requires a local MLX model (Apple Silicon)")
+    config.addinivalue_line(
+        "markers",
+        "ollama: marks tests that require a running Ollama server (deselect with '-m \"not ollama\"')",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
-    if config.getoption("--run-mlx"):
+    if config.getoption("--run-ollama"):
         return
-    import pytest
-
-    skip = pytest.mark.skip(reason="Need --run-mlx option to run")
+    skip_ollama = pytest.mark.skip(reason="need --run-ollama option to run")
     for item in items:
-        if "mlx" in item.keywords:
-            item.add_marker(skip)
+        if "ollama" in item.keywords:
+            item.add_marker(skip_ollama)

@@ -4,12 +4,10 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-llm = "*"
 requests = "*"
 
 [dev-packages]
 pytest = "*"
-llm-mlx = "*"
 
 [requires]
 python_version = "3.13"

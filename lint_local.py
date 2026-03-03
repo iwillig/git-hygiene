@@ -3,11 +3,11 @@
 Git Hygiene — local CLI runner.
 
 Lint commit messages from the current git repository without GitHub.
-Ideal for local development with mlx-lm models on Apple Silicon.
+Uses Ollama for local LLM inference, or any OpenAI-compatible API.
 
 Usage:
-    # Lint the last 5 commits using a local MLX model:
-    python lint_local.py --model mlx-community/Llama-3.2-3B-Instruct-4bit
+    # Lint the last 5 commits using a local Ollama model:
+    python lint_local.py --model qwen2.5:0.5b
 
     # Lint commits on a branch compared to main:
     python lint_local.py --range main..HEAD
@@ -21,8 +21,8 @@ Usage:
     # Skip grammar and only do LLM structure check:
     python lint_local.py --structure-only
 
-    # Use a remote model instead:
-    python lint_local.py --model gpt-4o-mini --api-key sk-...
+    # Use a remote model instead (e.g. OpenAI):
+    python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --api-key sk-...
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
-import llm
 import requests
 
 # ---------------------------------------------------------------------------
@@ -44,11 +43,12 @@ import requests
 
 DEFAULT_LANGUAGETOOL_URL = "https://api.languagetool.org/v2"
 DEFAULT_LANGUAGE = "en-US"
-DEFAULT_MODEL = "mlx-community/Llama-3.2-3B-Instruct-4bit"
+DEFAULT_MODEL = "qwen2.5:0.5b"
+DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_IGNORE_PATTERNS = [r"^Merge\s", r"^Revert\s"]
 
 # ---------------------------------------------------------------------------
-# Data model (shared with lint_commits.py)
+# Data model
 # ---------------------------------------------------------------------------
 
 
@@ -89,9 +89,7 @@ def git_log(revision_range: str | None = None, last_n: int | None = None) -> lis
         return []
 
     commits = []
-    # Split on the null-byte record separator.  Each record is "sha\0message\0"
     entries = raw.split("\0")
-    # entries come in pairs: [sha, message, sha, message, ...] with a trailing empty
     i = 0
     while i + 1 < len(entries):
         sha = entries[i].strip()
@@ -137,7 +135,7 @@ def check_grammar(text: str, lt_url: str, language: str) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# LLM structure check
+# LLM structure check (OpenAI-compatible API)
 # ---------------------------------------------------------------------------
 
 STRUCTURE_PROMPT = """\
@@ -151,7 +149,7 @@ Check for:
 1. Does the subject line summarise WHAT changed? (imperative mood preferred)
 2. Is there a body that explains WHY the change was made (motivation / context)?
    A one-line fix like "Fix typo" is acceptable — but non-trivial changes need a body.
-3. Is the subject ≤ 72 characters?
+3. Is the subject <= 72 characters?
 4. Is the subject separated from the body by a blank line (if a body exists)?
 5. Does the message avoid vague wording like "fix stuff", "updates", "misc changes"?
 
@@ -164,41 +162,35 @@ Commit message:
 """
 
 
-def _try_load_mlx_model(model_name: str) -> llm.Model:
-    """
-    Attempt to load a model.  If it looks like an MLX community model,
-    try the llm-mlx MlxModel class directly (avoids needing to pre-register
-    the model with `llm mlx download-model`).
-    """
-    # First try the standard llm registry (works for registered / API models)
-    try:
-        return llm.get_model(model_name)
-    except llm.UnknownModelError:
-        pass
-
-    # Fall back to direct MlxModel instantiation
-    try:
-        from llm_mlx import MlxModel
-        return MlxModel(model_name)
-    except ImportError:
-        raise RuntimeError(
-            f"Model '{model_name}' is not registered with llm and the llm-mlx "
-            "plugin is not installed.  Install it with: pip install llm-mlx"
-        )
-
-
-def check_structure(message: str, model_name: str, api_key: str | None = None) -> list[str]:
-    """Use an LLM to evaluate commit message structure."""
+def llm_chat(prompt: str, model: str, api_base: str, api_key: str = "") -> str:
+    """Send a chat completion request to an OpenAI-compatible API and return the response text."""
+    headers = {"Content-Type": "application/json"}
     if api_key:
-        os.environ.setdefault("OPENAI_API_KEY", api_key)
-        os.environ.setdefault("ANTHROPIC_API_KEY", api_key)
+        headers["Authorization"] = f"Bearer {api_key}"
 
+    payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+    }
+
+    resp = requests.post(
+        f"{api_base}/chat/completions",
+        headers=headers,
+        json=payload,
+        timeout=120,
+    )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def check_structure(message: str, model: str, api_base: str, api_key: str = "") -> list[str]:
+    """Use an LLM to evaluate commit message structure."""
     prompt = STRUCTURE_PROMPT.format(message=message)
 
     try:
-        model = _try_load_mlx_model(model_name)
-        response = model.prompt(prompt)
-        text = response.text().strip()
+        text = llm_chat(prompt, model, api_base, api_key).strip()
+
         # Strip markdown fences if the model wraps them
         if text.startswith("```"):
             text = "\n".join(text.split("\n")[1:])
@@ -239,20 +231,20 @@ def print_report(results: list[CommitIssue]) -> None:
             continue
         short_sha = r.sha[:8]
         subject = r.message.split("\n", 1)[0][:72]
-        print(f"{CYAN}{BOLD}{short_sha}{RESET} — {subject}")
+        print(f"{CYAN}{BOLD}{short_sha}{RESET} -- {subject}")
 
         if r.grammar_issues:
             print(f"  {YELLOW}Grammar:{RESET}")
             for gi in r.grammar_issues:
                 suggestion = ""
                 if gi["replacements"]:
-                    suggestion = f' → try: {", ".join(gi["replacements"])}'
-                print(f"    • {gi['message']}{suggestion}  ({gi['rule']})")
+                    suggestion = f' -> try: {", ".join(gi["replacements"])}'
+                print(f"    - {gi['message']}{suggestion}  ({gi['rule']})")
 
         if r.structure_issues:
             print(f"  {YELLOW}Structure:{RESET}")
             for si in r.structure_issues:
-                print(f"    • {si}")
+                print(f"    - {si}")
 
         print()
 
@@ -268,9 +260,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 examples:
-  %(prog)s --model mlx-community/Llama-3.2-3B-Instruct-4bit
+  %(prog)s --model qwen2.5:0.5b
   %(prog)s --range main..HEAD --grammar-only
-  %(prog)s --last 10 --model gpt-4o-mini --api-key sk-...
+  %(prog)s --last 10 --model gpt-4o-mini --api-base https://api.openai.com/v1 --api-key sk-...
 """,
     )
     # Commit selection
@@ -298,7 +290,12 @@ examples:
         default=DEFAULT_MODEL,
         help=f"LLM model name (default: {DEFAULT_MODEL})",
     )
-    p.add_argument("--api-key", help="API key for remote LLM providers (not needed for local MLX models)")
+    p.add_argument(
+        "--api-base",
+        default=DEFAULT_API_BASE,
+        help=f"OpenAI-compatible API base URL (default: {DEFAULT_API_BASE})",
+    )
+    p.add_argument("--api-key", default="", help="API key for remote LLM providers")
 
     # LanguageTool
     p.add_argument(
@@ -355,10 +352,10 @@ def main(argv: list[str] | None = None) -> int:
         subject = message.split("\n", 1)[0]
 
         if any(p.search(subject) for p in ignore_patterns):
-            print(f"   SKIP {sha[:8]} — skipped (matches ignore pattern)")
+            print(f"   SKIP {sha[:8]} -- skipped (matches ignore pattern)")
             continue
 
-        print(f"   CHECK {sha[:8]} — {subject[:60]}")
+        print(f"   CHECK {sha[:8]} -- {subject[:60]}")
 
         ci = CommitIssue(sha=sha, message=message)
 
@@ -371,7 +368,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # Structure check
         if not args.grammar_only:
-            ci.structure_issues = check_structure(message, args.model, args.api_key)
+            ci.structure_issues = check_structure(message, args.model, args.api_base, args.api_key)
 
         results.append(ci)
 
