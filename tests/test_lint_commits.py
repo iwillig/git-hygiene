@@ -41,6 +41,8 @@ class TestCheckGrammar:
         """Issues are extracted properly from LanguageTool response."""
         match = {
             "message": "Possible spelling mistake",
+            "offset": 4,
+            "length": 3,
             "context": {"text": "Fix teh build", "offset": 4, "length": 3},
             "replacements": [{"value": "the"}, {"value": "tech"}],
             "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
@@ -55,6 +57,106 @@ class TestCheckGrammar:
             assert issues[0]["message"] == "Possible spelling mistake"
             assert issues[0]["replacements"] == ["the", "tech"]
             assert issues[0]["rule"] == "MORFOLOGIK_RULE_EN_US"
+
+    def test_custom_word_suppresses_match(self):
+        """A match on a word in the custom dictionary is suppressed."""
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 10,
+            "length": 6,
+            "context": {"text": "Set up an Ollama server", "offset": 10, "length": 6},
+            "replacements": [{"value": "llama"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp):
+            issues = lint_commits.check_grammar(
+                "Set up an Ollama server", custom_words={"ollama"}
+            )
+            assert issues == []
+
+    def test_custom_word_case_insensitive(self):
+        """Custom words matching is case-insensitive."""
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 8,
+            "length": 5,
+            "context": {"text": "Use the NGINX proxy", "offset": 8, "length": 5},
+            "replacements": [],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp):
+            issues = lint_commits.check_grammar(
+                "Use the NGINX proxy", custom_words={"nginx"}
+            )
+            assert issues == []
+
+    def test_non_dictionary_word_still_reported(self):
+        """Words not in the custom dictionary are still reported."""
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 4,
+            "length": 3,
+            "context": {"text": "Fix teh build", "offset": 4, "length": 3},
+            "replacements": [{"value": "the"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp):
+            issues = lint_commits.check_grammar(
+                "Fix teh build", custom_words={"ollama", "nginx"}
+            )
+            assert len(issues) == 1
+
+    def test_builtin_words_used_by_default(self):
+        """When no custom_words passed, the built-in dictionary is used."""
+        # "ollama" is in BUILTIN_WORDS / CUSTOM_WORDS
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 10,
+            "length": 6,
+            "context": {"text": "Set up an Ollama server", "offset": 10, "length": 6},
+            "replacements": [{"value": "llama"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_commits.requests.post", return_value=mock_resp):
+            # No custom_words arg -- uses module-level CUSTOM_WORDS
+            issues = lint_commits.check_grammar("Set up an Ollama server")
+            assert issues == []
+
+
+# ---------------------------------------------------------------------------
+# _extract_flagged_word
+# ---------------------------------------------------------------------------
+
+
+class TestExtractFlaggedWord:
+    def test_extracts_word(self):
+        text = "Set up an Ollama server"
+        match = {"offset": 10, "length": 6}
+        assert lint_commits._extract_flagged_word(match, text) == "Ollama"
+
+    def test_returns_empty_on_bad_offset(self):
+        match = {"offset": 100, "length": 3}
+        assert lint_commits._extract_flagged_word(match, "short") == ""
+
+    def test_returns_empty_on_zero_length(self):
+        match = {"offset": 0, "length": 0}
+        assert lint_commits._extract_flagged_word(match, "text") == ""
 
 
 # ---------------------------------------------------------------------------

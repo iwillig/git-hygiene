@@ -47,6 +47,120 @@ DEFAULT_MODEL = "qwen2.5:0.5b"
 DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_IGNORE_PATTERNS = [r"^Merge\s", r"^Revert\s"]
 
+# Built-in dictionary of common dev/tool names that LanguageTool flags as
+# spelling mistakes.  Users can extend this via the --custom-words flag.
+BUILTIN_WORDS: set[str] = {
+    "ollama",
+    "llama",
+    "llm",
+    "openai",
+    "langchain",
+    "github",
+    "gitlab",
+    "bitbucket",
+    "dockerfile",
+    "kubernetes",
+    "kubectl",
+    "redis",
+    "postgres",
+    "postgresql",
+    "mongodb",
+    "nginx",
+    "fastapi",
+    "graphql",
+    "grpc",
+    "protobuf",
+    "webpack",
+    "vite",
+    "eslint",
+    "pytest",
+    "mypy",
+    "ruff",
+    "pipenv",
+    "pipfile",
+    "pyproject",
+    "toml",
+    "yaml",
+    "json",
+    "env",
+    "dotenv",
+    "cli",
+    "api",
+    "url",
+    "http",
+    "https",
+    "ssh",
+    "tcp",
+    "dns",
+    "ci",
+    "cd",
+    "pr",
+    "sha",
+    "repo",
+    "repos",
+    "refactor",
+    "refactored",
+    "refactoring",
+    "linter",
+    "linting",
+    "config",
+    "configs",
+    "middleware",
+    "frontend",
+    "backend",
+    "monorepo",
+    "codebase",
+    "README",
+    "changelog",
+    "pre-commit",
+    "deps",
+    "dev",
+    "devs",
+    "param",
+    "params",
+    "auth",
+    "authn",
+    "authz",
+    "oauth",
+    "async",
+    "await",
+    "goroutine",
+    "mutex",
+    "stdin",
+    "stdout",
+    "stderr",
+    "args",
+    "kwargs",
+    "enum",
+    "enums",
+    "struct",
+    "structs",
+    "tuple",
+    "tuples",
+    "bool",
+    "int",
+    "str",
+    "dict",
+    "dataclass",
+    "namespace",
+    "namespaces",
+    "runtime",
+    "subprocess",
+    "plugin",
+    "plugins",
+    "serializer",
+    "deserializer",
+    "endpoint",
+    "endpoints",
+    "webhook",
+    "webhooks",
+    "cron",
+    "regex",
+    "noop",
+    "wip",
+    "fixup",
+}
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -106,8 +220,26 @@ def git_log(revision_range: str | None = None, last_n: int | None = None) -> lis
 # ---------------------------------------------------------------------------
 
 
-def check_grammar(text: str, lt_url: str, language: str) -> list[dict]:
-    """Return a list of grammar issues from LanguageTool."""
+def _extract_flagged_word(match: dict, text: str) -> str:
+    """Extract the word that LanguageTool flagged from the original text."""
+    offset = match.get("offset", 0)
+    length = match.get("length", 0)
+    if offset >= 0 and length > 0 and offset + length <= len(text):
+        return text[offset:offset + length]
+    return ""
+
+
+def check_grammar(
+    text: str, lt_url: str, language: str, custom_words: set[str] | None = None
+) -> list[dict]:
+    """Return a list of grammar issues from LanguageTool.
+
+    Matches where the flagged word appears in *custom_words* (case-insensitive)
+    are silently dropped.
+    """
+    if custom_words is None:
+        custom_words = {w.lower() for w in BUILTIN_WORDS}
+
     resp = requests.post(
         f"{lt_url}/check",
         data={
@@ -121,6 +253,11 @@ def check_grammar(text: str, lt_url: str, language: str) -> list[dict]:
     matches = resp.json().get("matches", [])
     issues = []
     for m in matches:
+        # Check if the flagged word is in the custom dictionary
+        flagged = _extract_flagged_word(m, text)
+        if flagged and flagged.lower() in custom_words:
+            continue
+
         issues.append(
             {
                 "message": m.get("message", ""),
@@ -319,6 +456,16 @@ examples:
         "Defaults to skipping Merge and Revert commits.",
     )
 
+    # Custom dictionary
+    p.add_argument(
+        "--custom-word",
+        action="append",
+        default=None,
+        metavar="WORD",
+        help="Extra words to add to the spell-check dictionary (repeatable). "
+        "A built-in list of common dev/tool names is always included.",
+    )
+
     return p.parse_args(argv)
 
 
@@ -329,6 +476,12 @@ def main(argv: list[str] | None = None) -> int:
         re.compile(p)
         for p in (args.ignore_pattern if args.ignore_pattern else DEFAULT_IGNORE_PATTERNS)
     ]
+
+    # Build custom words set
+    custom_words = {w.lower() for w in BUILTIN_WORDS}
+    if args.custom_word:
+        for w in args.custom_word:
+            custom_words.add(w.lower())
 
     # Fetch commits
     if args.range:
@@ -362,7 +515,9 @@ def main(argv: list[str] | None = None) -> int:
         # Grammar check
         if not args.structure_only:
             try:
-                ci.grammar_issues = check_grammar(message, args.languagetool_url, args.language)
+                ci.grammar_issues = check_grammar(
+                    message, args.languagetool_url, args.language, custom_words
+                )
             except Exception as exc:
                 print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
 

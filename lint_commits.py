@@ -30,6 +30,7 @@ USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "true").lower() == "true"
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2")
 LANGUAGETOOL_LANGUAGE = os.environ.get("LANGUAGETOOL_LANGUAGE", "en-US")
 IGNORE_PATTERNS_RAW = os.environ.get("IGNORE_PATTERNS", "")
+CUSTOM_WORDS_RAW = os.environ.get("CUSTOM_WORDS", "")
 FAIL_ON_ERROR = os.environ.get("FAIL_ON_ERROR", "true").lower() == "true"
 
 IGNORE_PATTERNS: list[re.Pattern] = []
@@ -37,6 +38,126 @@ for line in IGNORE_PATTERNS_RAW.strip().splitlines():
     line = line.strip()
     if line:
         IGNORE_PATTERNS.append(re.compile(line))
+
+# Built-in dictionary of common dev/tool names that LanguageTool flags as
+# spelling mistakes.  Users can extend this via the custom-words input.
+BUILTIN_WORDS: set[str] = {
+    "ollama",
+    "llama",
+    "llm",
+    "openai",
+    "langchain",
+    "github",
+    "gitlab",
+    "bitbucket",
+    "dockerfile",
+    "kubernetes",
+    "kubectl",
+    "redis",
+    "postgres",
+    "postgresql",
+    "mongodb",
+    "nginx",
+    "fastapi",
+    "graphql",
+    "grpc",
+    "protobuf",
+    "webpack",
+    "vite",
+    "eslint",
+    "pytest",
+    "mypy",
+    "ruff",
+    "pipenv",
+    "pipfile",
+    "pyproject",
+    "toml",
+    "yaml",
+    "json",
+    "env",
+    "dotenv",
+    "cli",
+    "api",
+    "url",
+    "http",
+    "https",
+    "ssh",
+    "tcp",
+    "dns",
+    "ci",
+    "cd",
+    "pr",
+    "sha",
+    "repo",
+    "repos",
+    "refactor",
+    "refactored",
+    "refactoring",
+    "linter",
+    "linting",
+    "config",
+    "configs",
+    "middleware",
+    "frontend",
+    "backend",
+    "monorepo",
+    "codebase",
+    "README",
+    "changelog",
+    "pre-commit",
+    "deps",
+    "dev",
+    "devs",
+    "param",
+    "params",
+    "auth",
+    "authn",
+    "authz",
+    "oauth",
+    "async",
+    "await",
+    "goroutine",
+    "mutex",
+    "stdin",
+    "stdout",
+    "stderr",
+    "args",
+    "kwargs",
+    "enum",
+    "enums",
+    "struct",
+    "structs",
+    "tuple",
+    "tuples",
+    "bool",
+    "int",
+    "str",
+    "dict",
+    "dataclass",
+    "namespace",
+    "namespaces",
+    "runtime",
+    "subprocess",
+    "plugin",
+    "plugins",
+    "serializer",
+    "deserializer",
+    "endpoint",
+    "endpoints",
+    "webhook",
+    "webhooks",
+    "cron",
+    "regex",
+    "noop",
+    "wip",
+    "fixup",
+}
+
+CUSTOM_WORDS: set[str] = {w.lower() for w in BUILTIN_WORDS}
+for line in CUSTOM_WORDS_RAW.strip().splitlines():
+    word = line.strip()
+    if word:
+        CUSTOM_WORDS.add(word.lower())
 
 # ---------------------------------------------------------------------------
 # Data model
@@ -107,8 +228,24 @@ def post_pr_comment(body: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def check_grammar(text: str) -> list[dict]:
-    """Return a list of grammar issues from LanguageTool."""
+def _extract_flagged_word(match: dict, text: str) -> str:
+    """Extract the word that LanguageTool flagged from the original text."""
+    offset = match.get("offset", 0)
+    length = match.get("length", 0)
+    if offset >= 0 and length > 0 and offset + length <= len(text):
+        return text[offset:offset + length]
+    return ""
+
+
+def check_grammar(text: str, custom_words: set[str] | None = None) -> list[dict]:
+    """Return a list of grammar issues from LanguageTool.
+
+    Matches where the flagged word appears in *custom_words* (case-insensitive)
+    are silently dropped.
+    """
+    if custom_words is None:
+        custom_words = CUSTOM_WORDS
+
     resp = requests.post(
         f"{LANGUAGETOOL_URL}/check",
         data={
@@ -122,6 +259,11 @@ def check_grammar(text: str) -> list[dict]:
     matches = resp.json().get("matches", [])
     issues = []
     for m in matches:
+        # Check if the flagged word is in the custom dictionary
+        flagged = _extract_flagged_word(m, text)
+        if flagged and flagged.lower() in custom_words:
+            continue
+
         issues.append(
             {
                 "message": m.get("message", ""),

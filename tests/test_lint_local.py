@@ -108,6 +108,74 @@ class TestCheckGrammarLocal:
         call_data = mock_post.call_args[1].get("data") or mock_post.call_args.kwargs.get("data")
         assert call_data["language"] == "de-DE"
 
+    def test_custom_word_suppresses_match(self):
+        """Words in the custom dictionary are filtered out."""
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 10,
+            "length": 6,
+            "context": {"text": "Set up an Ollama server", "offset": 10, "length": 6},
+            "replacements": [{"value": "llama"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_local.requests.post", return_value=mock_resp):
+            issues = lint_local.check_grammar(
+                "Set up an Ollama server",
+                "https://api.languagetool.org/v2",
+                "en-US",
+                custom_words={"ollama"},
+            )
+            assert issues == []
+
+    def test_builtin_words_used_by_default(self):
+        """Built-in dictionary is used when custom_words is not passed."""
+        text = "Add Ollama support"
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 4,
+            "length": 6,
+            "context": {"text": text, "offset": 4, "length": 6},
+            "replacements": [{"value": "llama"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_local.requests.post", return_value=mock_resp):
+            # No custom_words arg -- uses BUILTIN_WORDS which includes "ollama"
+            issues = lint_local.check_grammar(
+                text, "https://api.languagetool.org/v2", "en-US"
+            )
+            assert issues == []
+
+    def test_non_dictionary_word_still_reported(self):
+        """Misspellings not in the dictionary are still flagged."""
+        match = {
+            "message": "Possible spelling mistake found.",
+            "offset": 4,
+            "length": 3,
+            "context": {"text": "Fix teh build", "offset": 4, "length": 3},
+            "replacements": [{"value": "the"}],
+            "rule": {"id": "MORFOLOGIK_RULE_EN_US"},
+        }
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"matches": [match]}
+        mock_resp.raise_for_status = MagicMock()
+
+        with patch("lint_local.requests.post", return_value=mock_resp):
+            issues = lint_local.check_grammar(
+                "Fix teh build",
+                "https://api.languagetool.org/v2",
+                "en-US",
+                custom_words={"ollama"},
+            )
+            assert len(issues) == 1
+
 
 # ---------------------------------------------------------------------------
 # llm_chat (local version)
@@ -205,6 +273,14 @@ class TestParseArgs:
     def test_custom_ignore_patterns(self):
         args = lint_local.parse_args(["--ignore-pattern", "^WIP", "--ignore-pattern", "^fixup!"])
         assert args.ignore_pattern == ["^WIP", "^fixup!"]
+
+    def test_custom_words(self):
+        args = lint_local.parse_args(["--custom-word", "Shortcut", "--custom-word", "Clubhouse"])
+        assert args.custom_word == ["Shortcut", "Clubhouse"]
+
+    def test_custom_words_default(self):
+        args = lint_local.parse_args([])
+        assert args.custom_word is None
 
 
 # ---------------------------------------------------------------------------

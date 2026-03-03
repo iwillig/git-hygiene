@@ -54,6 +54,14 @@ inputs:
       ^Merge\s
       ^Revert\s
 
+  custom-words:
+    description: >
+      Newline-separated list of words to add to the spell-check dictionary.
+      Matches where the flagged text is one of these words (case-insensitive) are
+      suppressed.  A built-in list of common dev/tool names is always included.
+    required: false
+    default: ""
+
   fail-on-error:
     description: "Whether to fail the check (exit 1) when issues are found"
     required: false
@@ -93,6 +101,7 @@ runs:
         LANGUAGETOOL_URL: ${{ inputs.languagetool-url }}
         LANGUAGETOOL_LANGUAGE: ${{ inputs.languagetool-language }}
         IGNORE_PATTERNS: ${{ inputs.ignore-patterns }}
+        CUSTOM_WORDS: ${{ inputs.custom-words }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
         PR_NUMBER: ${{ github.event.pull_request.number }}
         REPO: ${{ github.repository }}

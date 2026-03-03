@@ -74,7 +74,33 @@ jobs:
 | `languagetool-url`      | no       | `https://api.languagetool.org/v2`    | LanguageTool API base URL (point to self-hosted if desired)             |
 | `languagetool-language` | no       | `en-US`                              | Language code for grammar checking                                     |
 | `ignore-patterns`       | no       | `^Merge\s` / `^Revert\s`            | Newline-separated regexes -- matching commit subjects are skipped      |
+| `custom-words`          | no       | --                                    | Newline-separated words to add to the spell-check dictionary           |
 | `fail-on-error`         | no       | `true`                               | Set to `false` to post a comment without failing the check             |
+
+### Custom Dictionary
+
+LanguageTool may flag technical terms, tool names, or project-specific words as
+spelling mistakes. Git Hygiene ships with a built-in dictionary of ~100 common
+dev terms (e.g. Ollama, Kubernetes, GraphQL, pytest, middleware, etc.) that are
+automatically suppressed.
+
+To add your own words, use the `custom-words` input:
+
+```yaml
+- uses: shortcut/git-hygiene@main
+  with:
+    github-token: ${{ secrets.GITHUB_TOKEN }}
+    custom-words: |
+      Shortcut
+      Clubhouse
+      MyCompanyTool
+```
+
+For the local CLI, use `--custom-word` (repeatable):
+
+```bash
+python lint_local.py --custom-word Shortcut --custom-word Clubhouse
+```
 
 ### Ollama Models
 
@@ -207,6 +233,7 @@ python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --
 | `--languagetool-url URL` | Custom LanguageTool API URL |
 | `--language CODE` | Language for grammar checking (default: `en-US`) |
 | `--ignore-pattern REGEX` | Regex for subjects to skip (repeatable) |
+| `--custom-word WORD` | Extra words for the spell-check dictionary (repeatable) |
 
 ## Development
 
