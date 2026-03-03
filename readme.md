@@ -1,4 +1,4 @@
-# Git Hygiene 🧹
+# Git Hygiene
 
 A GitHub Action that lints git commit messages on pull requests for:
 
@@ -9,7 +9,7 @@ When issues are found the action **posts a PR comment** summarising them and **f
 
 ## Quick Start
 
-### Option A: Local model — no API key needed ⭐
+### Option A: Local model — no API key needed (recommended)
 
 Run a small LLM directly on the GitHub Actions runner. Zero cost, fully
 private — no data ever leaves the runner.

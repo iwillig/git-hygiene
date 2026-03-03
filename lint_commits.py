@@ -215,7 +215,7 @@ def check_structure(message: str) -> list[str]:
         data = json.loads(text)
         return data.get("issues", [])
     except Exception as exc:
-        print(f"⚠️  LLM structure check failed: {exc}", file=sys.stderr)
+        print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
         return [f"LLM analysis error: {exc}"]
 
 
@@ -230,9 +230,9 @@ def build_report(results: list[CommitIssue]) -> str:
 
     lines: list[str] = []
     if issues_found:
-        lines.append("## 🧹 Git Hygiene — Issues Found\n")
+        lines.append("## Git Hygiene — Issues Found\n")
     else:
-        lines.append("## ✅ Git Hygiene — All Commits Look Good!\n")
+        lines.append("## Git Hygiene — All Commits Look Good!\n")
         return "\n".join(lines)
 
     for r in results:
@@ -269,11 +269,11 @@ def build_report(results: list[CommitIssue]) -> str:
 
 def main() -> int:
     if USE_LOCAL_MODEL:
-        print(f"🧠 Using local MLX model: {LLM_MODEL}")
+        print(f"Using local MLX model: {LLM_MODEL}")
     else:
-        print(f"🌐 Using remote model: {LLM_MODEL}")
+        print(f"Using remote model: {LLM_MODEL}")
 
-    print(f"🔍 Fetching commits for PR #{PR_NUMBER} in {REPO} …")
+    print(f"Fetching commits for PR #{PR_NUMBER} in {REPO} ...")
     commits = fetch_pr_commits()
     print(f"   Found {len(commits)} commit(s).")
 
@@ -286,10 +286,10 @@ def main() -> int:
 
         # Check ignore patterns
         if any(p.search(subject) for p in IGNORE_PATTERNS):
-            print(f"   ⏭️  {sha[:8]} — skipped (matches ignore pattern)")
+            print(f"   SKIP {sha[:8]} — skipped (matches ignore pattern)")
             continue
 
-        print(f"   🔎 {sha[:8]} — {subject[:60]}")
+        print(f"   CHECK {sha[:8]} — {subject[:60]}")
 
         ci = CommitIssue(sha=sha, message=message)
 
@@ -297,7 +297,7 @@ def main() -> int:
         try:
             ci.grammar_issues = check_grammar(message)
         except Exception as exc:
-            print(f"      ⚠️  Grammar check failed: {exc}", file=sys.stderr)
+            print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
 
         # Structure check
         ci.structure_issues = check_structure(message)
@@ -311,17 +311,17 @@ def main() -> int:
     # Post PR comment
     try:
         post_pr_comment(report)
-        print("\n💬 Posted PR comment.")
+        print("\nPosted PR comment.")
     except Exception as exc:
-        print(f"\n⚠️  Failed to post PR comment: {exc}", file=sys.stderr)
+        print(f"\nWARNING: Failed to post PR comment: {exc}", file=sys.stderr)
 
     # Determine exit code
     has_issues = any(r.has_issues for r in results)
     if has_issues and FAIL_ON_ERROR:
-        print("\n❌ Issues found — failing the check.")
+        print("\nIssues found — failing the check.")
         return 1
 
-    print("\n✅ Done.")
+    print("\nDone.")
     return 0
 
 

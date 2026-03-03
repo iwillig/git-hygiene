@@ -91,11 +91,11 @@ jobs:
 
           # On the very first push (new repo), before is all zeros — lint the last commit
           if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
-            echo "🔍 First push — linting HEAD commit only"
+            echo "First push -- linting HEAD commit only"
             python lint_local.py --last 1 \
               --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
           else
-            echo "🔍 Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
+            echo "Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
             python lint_local.py --range "${BEFORE}..${AFTER}" \
               --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
           fi

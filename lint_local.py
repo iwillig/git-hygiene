@@ -207,7 +207,7 @@ def check_structure(message: str, model_name: str, api_key: str | None = None) -
         data = json.loads(text)
         return data.get("issues", [])
     except Exception as exc:
-        print(f"⚠️  LLM structure check failed: {exc}", file=sys.stderr)
+        print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
         return [f"LLM analysis error: {exc}"]
 
 
@@ -229,10 +229,10 @@ def print_report(results: list[CommitIssue]) -> None:
     issues_found = any(r.has_issues for r in results)
 
     if not issues_found:
-        print(f"\n{GREEN}{BOLD}✅ All commits look good!{RESET}\n")
+        print(f"\n{GREEN}{BOLD}All commits look good!{RESET}\n")
         return
 
-    print(f"\n{RED}{BOLD}🧹 Git Hygiene — Issues Found{RESET}\n")
+    print(f"\n{RED}{BOLD}Git Hygiene — Issues Found{RESET}\n")
 
     for r in results:
         if not r.has_issues:
@@ -335,10 +335,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # Fetch commits
     if args.range:
-        print(f"🔍 Fetching commits in range {args.range} …")
+        print(f"Fetching commits in range {args.range} ...")
         commits = git_log(revision_range=args.range)
     else:
-        print(f"🔍 Fetching last {args.last} commit(s) …")
+        print(f"Fetching last {args.last} commit(s) ...")
         commits = git_log(last_n=args.last)
 
     print(f"   Found {len(commits)} commit(s).\n")
@@ -355,10 +355,10 @@ def main(argv: list[str] | None = None) -> int:
         subject = message.split("\n", 1)[0]
 
         if any(p.search(subject) for p in ignore_patterns):
-            print(f"   ⏭️  {sha[:8]} — skipped (matches ignore pattern)")
+            print(f"   SKIP {sha[:8]} — skipped (matches ignore pattern)")
             continue
 
-        print(f"   🔎 {sha[:8]} — {subject[:60]}")
+        print(f"   CHECK {sha[:8]} — {subject[:60]}")
 
         ci = CommitIssue(sha=sha, message=message)
 
@@ -367,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 ci.grammar_issues = check_grammar(message, args.languagetool_url, args.language)
             except Exception as exc:
-                print(f"      ⚠️  Grammar check failed: {exc}", file=sys.stderr)
+                print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
 
         # Structure check
         if not args.grammar_only:
