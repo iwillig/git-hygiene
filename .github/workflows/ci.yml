@@ -11,7 +11,10 @@ permissions:
   pull-requests: write
 
 jobs:
-  # ── Unit tests ─────────────────────────────────────────────────────────
+  # ── Unit tests (push + PR) ────────────────────────────────────────────
+  # Only needs the core packages + pytest.  We skip llm-mlx/mlx-lm here
+  # because the default mlx package pulls in mlx-metal which is macOS-only.
+  # All MLX-touching code paths are mocked in the unit tests anyway.
   test:
     name: Unit Tests
     runs-on: ubuntu-latest
@@ -25,27 +28,62 @@ jobs:
           python-version: "3.13"
 
       - name: Install dependencies
-        run: |
-          pip install pipenv
-          pipenv install --dev --deploy
+        run: pip install llm requests pytest
 
       - name: Run tests
-        run: pipenv run pytest tests/ -v --ignore=tests/test_integration_mlx.py
+        run: pytest tests/ -v --ignore=tests/test_integration_mlx.py
 
-  # ── Dogfood: run git-hygiene on its own commits (local MLX model) ─────
-  lint-commits:
-    name: Git Hygiene (dogfood)
+  # ── Dogfood on PR: lint PR commits, post comment ──────────────────────
+  lint-pr:
+    name: Lint PR Commits
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request'
-    needs: test  # only lint if tests pass
+    needs: test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Run Git Hygiene on this PR
-        uses: ./  # use the action from this repo
+        uses: ./
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "true"
           llm-model: "mlx-community/Qwen2.5-0.5B-Instruct-4bit"
-          fail-on-error: "false"  # don't block PRs while we're tuning
+          fail-on-error: "false"
+
+  # ── Dogfood on push to main: lint the merged commits ──────────────────
+  lint-push:
+    name: Lint Pushed Commits
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Fetch enough history to cover the pushed commits
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install llm requests "mlx-lm[cpu]" llm-mlx
+
+      - name: Lint commits pushed to main
+        run: |
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # On the very first push (new repo), before is all zeros — lint the last commit
+          if [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "🔍 First push — linting HEAD commit only"
+            python lint_local.py --last 1 \
+              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
+          else
+            echo "🔍 Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
+            python lint_local.py --range "${BEFORE}..${AFTER}" \
+              --model mlx-community/Qwen2.5-0.5B-Instruct-4bit
+          fi
