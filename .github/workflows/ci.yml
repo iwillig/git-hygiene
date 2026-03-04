@@ -59,6 +59,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Fetch tags and refs to get full history including force-pushed commits
+          fetch-tags: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -83,6 +85,13 @@ jobs:
             echo "First push -- linting HEAD commit only"
             python lint_local.py --last 1 --model qwen2.5:0.5b
           else
-            echo "Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
-            python lint_local.py --range "${BEFORE}..${AFTER}" --model qwen2.5:0.5b
+            # Check if the BEFORE commit exists (could be missing after force push)
+            if git cat-file -t "$BEFORE" >/dev/null 2>&1; then
+              echo "Linting commits ${BEFORE:0:8}..${AFTER:0:8}"
+              python lint_local.py --range "${BEFORE}..${AFTER}" --model qwen2.5:0.5b
+            else
+              echo "WARNING: Base commit $BEFORE does not exist (possibly force-pushed)."
+              echo "Falling back to linting the last commit only."
+              python lint_local.py --last 1 --model qwen2.5:0.5b
+            fi
           fi

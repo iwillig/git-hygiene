@@ -199,7 +199,27 @@ def git_log(revision_range: str | None = None, last_n: int | None = None) -> lis
     else:
         cmd.extend(["-n", "5"])
 
-    result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except subprocess.CalledProcessError as exc:
+        # Common issue: base commit doesn't exist (force push, wrong branch, etc.)
+        if revision_range and exc.returncode == 128:
+            stderr = exc.stderr.strip()
+            print(
+                f"ERROR: git log failed for range '{revision_range}'.\n"
+                f"Git error: {stderr}\n"
+                f"\n"
+                f"Common causes:\n"
+                f"  - The base commit was force-pushed over and no longer exists\n"
+                f"  - Shallow clone in CI (need fetch-depth: 0)\n"
+                f"  - The base commit is from a different branch\n"
+                f"\n"
+                f"Suggestion: Check if the base commit exists with:\n"
+                f"  git cat-file -t {revision_range.split('..')[0] if '..' in revision_range else 'BASE_SHA'}\n",
+                file=sys.stderr
+            )
+        raise
+    
     raw = result.stdout.strip()
     if not raw:
         return []
