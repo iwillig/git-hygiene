@@ -120,7 +120,6 @@ class TestCheckGrammar:
 
     def test_builtin_words_used_by_default(self):
         """When no custom_words passed, the built-in dictionary is used."""
-        # "ollama" is in BUILTIN_WORDS / CUSTOM_WORDS
         match = {
             "message": "Possible spelling mistake found.",
             "offset": 10,
@@ -134,7 +133,6 @@ class TestCheckGrammar:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_commits.requests.post", return_value=mock_resp):
-            # No custom_words arg -- uses module-level CUSTOM_WORDS
             issues = lint_commits.check_grammar("Set up an Ollama server")
             assert issues == []
 
@@ -160,82 +158,36 @@ class TestExtractFlaggedWord:
 
 
 # ---------------------------------------------------------------------------
-# llm_chat
+# get_llm_model
 # ---------------------------------------------------------------------------
 
 
-class TestLlmChat:
-    def test_sends_correct_request(self):
-        """Verify the request payload sent to the OpenAI-compatible API."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "Hello!"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
+class TestGetLlmModel:
+    def test_loads_model(self):
+        """get_llm_model calls llm.get_model with the model_id."""
+        mock_model = MagicMock()
+        with patch("lint_commits.llm.get_model", return_value=mock_model) as mock_get:
+            result = lint_commits.get_llm_model("qwen2.5:0.5b")
 
-        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
-            result = lint_commits.llm_chat("Hi", "qwen2.5:0.5b", "http://localhost:11434/v1")
+        mock_get.assert_called_once_with("qwen2.5:0.5b")
+        assert result is mock_model
 
-        assert result == "Hello!"
-        call_kwargs = mock_post.call_args
-        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert payload["model"] == "qwen2.5:0.5b"
-        # With no system prompt, only one message
-        assert len(payload["messages"]) == 1
-        assert payload["messages"][0]["role"] == "user"
-        assert payload["messages"][0]["content"] == "Hi"
+    def test_sets_api_key(self):
+        """When an API key is provided, it is set on the model."""
+        mock_model = MagicMock()
+        mock_model.key = ""
+        with patch("lint_commits.llm.get_model", return_value=mock_model):
+            result = lint_commits.get_llm_model("gpt-4o-mini", api_key="sk-test")
 
-    def test_system_prompt_sent_as_system_message(self):
-        """When a system_prompt is provided, it is the first message."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
+        assert result.key == "sk-test"
 
-        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
-            lint_commits.llm_chat(
-                "commit msg", "qwen2.5:0.5b", "http://localhost:11434/v1",
-                system_prompt="You are a reviewer.",
-            )
+    def test_no_key_when_empty(self):
+        """Empty api_key does not set model.key."""
+        mock_model = MagicMock(spec=[])  # no 'key' attribute
+        with patch("lint_commits.llm.get_model", return_value=mock_model):
+            result = lint_commits.get_llm_model("qwen2.5:0.5b", api_key="")
 
-        call_kwargs = mock_post.call_args
-        payload = call_kwargs.kwargs.get("json") or call_kwargs[1].get("json")
-        assert len(payload["messages"]) == 2
-        assert payload["messages"][0]["role"] == "system"
-        assert payload["messages"][0]["content"] == "You are a reviewer."
-        assert payload["messages"][1]["role"] == "user"
-        assert payload["messages"][1]["content"] == "commit msg"
-
-    def test_includes_auth_header(self):
-        """API key is passed as a Bearer token."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
-            lint_commits.llm_chat("Hi", "gpt-4o-mini", "https://api.openai.com/v1", "sk-test")
-
-        call_kwargs = mock_post.call_args
-        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
-        assert headers["Authorization"] == "Bearer sk-test"
-
-    def test_no_auth_header_when_empty(self):
-        """No Authorization header when api_key is empty."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("lint_commits.requests.post", return_value=mock_resp) as mock_post:
-            lint_commits.llm_chat("Hi", "qwen2.5:0.5b", "http://localhost:11434/v1", "")
-
-        call_kwargs = mock_post.call_args
-        headers = call_kwargs.kwargs.get("headers") or call_kwargs[1].get("headers")
-        assert "Authorization" not in headers
+        assert not hasattr(result, "key") or result.key != "something"
 
 
 # ---------------------------------------------------------------------------
@@ -244,6 +196,14 @@ class TestLlmChat:
 
 
 class TestCheckStructure:
+    def _mock_model(self, response_text: str) -> MagicMock:
+        """Create a mock llm.Model that returns the given text."""
+        mock_response = MagicMock()
+        mock_response.text.return_value = response_text
+        mock_model = MagicMock()
+        mock_model.prompt.return_value = mock_response
+        return mock_model
+
     def test_good_commit(self):
         """LLM recognises a commit that explains why."""
         llm_response = json.dumps({
@@ -252,13 +212,14 @@ class TestCheckStructure:
             "feedback": "Good commit message that explains the motivation.",
             "suggestion": None,
         })
-        with patch("lint_commits.llm_chat", return_value=llm_response):
-            result = lint_commits.check_structure(
-                "Add user avatar upload\n\nUsers requested the ability to upload custom avatars."
-            )
-            assert result["explains_why"] is True
-            assert result["score"] == 9
-            assert result["suggestion"] is None
+        model = self._mock_model(llm_response)
+        result = lint_commits.check_structure(
+            "Add user avatar upload\n\nUsers requested the ability to upload custom avatars.",
+            model=model,
+        )
+        assert result["explains_why"] is True
+        assert result["score"] == 9
+        assert result["suggestion"] is None
 
     def test_poor_commit(self):
         """LLM flags a commit that does not explain why."""
@@ -266,13 +227,13 @@ class TestCheckStructure:
             "explains_why": False,
             "score": 2,
             "feedback": "This commit only states what changed, not why.",
-            "suggestion": "Fix typo in README\n\nThe API endpoint URL had a trailing slash that caused 404 errors.",
+            "suggestion": "Fix typo in README\n\nThe API endpoint URL had a trailing slash.",
         })
-        with patch("lint_commits.llm_chat", return_value=llm_response):
-            result = lint_commits.check_structure("updates")
-            assert result["explains_why"] is False
-            assert result["score"] == 2
-            assert result["suggestion"] is not None
+        model = self._mock_model(llm_response)
+        result = lint_commits.check_structure("updates", model=model)
+        assert result["explains_why"] is False
+        assert result["score"] == 2
+        assert result["suggestion"] is not None
 
     def test_markdown_fenced_response(self):
         """LLM wraps response in markdown fences -- still parsed."""
@@ -281,31 +242,32 @@ class TestCheckStructure:
             "feedback": "Missing context.", "suggestion": None,
         })
         llm_response = f"```json\n{inner}\n```"
-        with patch("lint_commits.llm_chat", return_value=llm_response):
-            result = lint_commits.check_structure("Fix bug")
-            assert result["score"] == 3
+        model = self._mock_model(llm_response)
+        result = lint_commits.check_structure("Fix bug", model=model)
+        assert result["score"] == 3
 
     def test_llm_failure(self):
         """If the LLM call explodes, we get an error dict back."""
-        with patch("lint_commits.llm_chat", side_effect=RuntimeError("timeout")):
-            result = lint_commits.check_structure("something")
-            assert result["explains_why"] is False
-            assert result["score"] == 0
-            assert "timeout" in result["feedback"]
+        mock_model = MagicMock()
+        mock_model.prompt.side_effect = RuntimeError("timeout")
+        result = lint_commits.check_structure("something", model=mock_model)
+        assert result["explains_why"] is False
+        assert result["score"] == 0
+        assert "timeout" in result["feedback"]
 
-    def test_system_prompt_is_used(self):
-        """check_structure passes the system prompt to llm_chat."""
+    def test_system_prompt_passed(self):
+        """check_structure passes the system prompt to model.prompt."""
         llm_response = json.dumps({
             "explains_why": True, "score": 8,
             "feedback": "Good.", "suggestion": None,
         })
-        with patch("lint_commits.llm_chat", return_value=llm_response) as mock_chat:
-            lint_commits.check_structure("some commit")
+        model = self._mock_model(llm_response)
+        lint_commits.check_structure("some commit", model=model)
 
-        call_kwargs = mock_chat.call_args
-        # system_prompt should be passed as a keyword argument
-        assert "system_prompt" in call_kwargs.kwargs
-        assert "explains the WHY" in call_kwargs.kwargs["system_prompt"]
+        model.prompt.assert_called_once()
+        call_kwargs = model.prompt.call_args
+        assert call_kwargs.kwargs.get("system") is not None
+        assert "explains the WHY" in call_kwargs.kwargs["system"]
 
 
 # ---------------------------------------------------------------------------

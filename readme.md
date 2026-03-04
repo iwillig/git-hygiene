@@ -5,6 +5,11 @@ A GitHub Action that lints git commit messages on pull requests for:
 - **Structure quality** -- via an LLM (checks that commits explain *why*, not just *what*)
 - **Grammar issues** (optional, disabled by default) -- via the [LanguageTool](https://languagetool.org/) API
 
+LLM interaction is powered by the [llm](https://llm.datasette.io/) library,
+which supports Ollama (via [llm-ollama](https://github.com/taketwo/llm-ollama)),
+OpenAI, and [many other providers](https://llm.datasette.io/en/stable/plugins/directory.html)
+through plugins.
+
 When issues are found the action **posts a PR comment** summarising them and **fails the check**.
 
 ## Quick Start
@@ -40,12 +45,14 @@ jobs:
 
 The action installs [Ollama](https://ollama.com/) via
 [setup-ollama](https://github.com/ai-action/setup-ollama), pulls the model,
-and runs inference locally. Works on `ubuntu-latest`, `macos-latest`, and
-`windows-latest` runners.
+and uses the [llm](https://llm.datasette.io/) library with the
+[llm-ollama](https://github.com/taketwo/llm-ollama) plugin. Works on
+`ubuntu-latest`, `macos-latest`, and `windows-latest` runners.
 
 ### Option B: Remote API model
 
 Uses a cloud LLM provider -- faster, but requires an API key secret.
+The [llm](https://llm.datasette.io/) library has built-in support for OpenAI models.
 
 ```yaml
 jobs:
@@ -58,7 +65,6 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "false"
           llm-model: "gpt-4o-mini"
-          llm-api-base: "https://api.openai.com/v1"
           llm-api-key: ${{ secrets.OPENAI_API_KEY }}
 ```
 
@@ -68,8 +74,7 @@ jobs:
 | ----------------------- | -------- | ------------------------------------ | ----------------------------------------------------------------------- |
 | `github-token`          | yes      | `${{ github.token }}`                | GitHub token (needs `pull-requests: write` for comments)                |
 | `use-local-model`       | no       | `true`                               | Run the LLM locally via Ollama (no API key needed)                     |
-| `llm-model`             | no       | `qwen2.5:0.5b`                       | Model name -- Ollama model or OpenAI-compatible model name             |
-| `llm-api-base`          | no       | `http://localhost:11434/v1`           | OpenAI-compatible API base URL                                         |
+| `llm-model`             | no       | `qwen2.5:0.5b`                       | Model name as known to the `llm` library (run `llm models` to list)   |
 | `llm-api-key`           | no       | --                                    | API key for a remote LLM provider (required when `use-local-model` is false) |
 | `enable-grammar`        | no       | `false`                              | Enable the LanguageTool grammar checker                                |
 | `languagetool-url`      | no       | `https://api.languagetool.org/v2`    | LanguageTool API base URL (point to self-hosted if desired)             |
@@ -133,18 +138,19 @@ plantuml -tpng docs/architecture.puml -o ../docs/
 
 1. A developer opens or updates a pull request.
 2. GitHub triggers the composite action (`action.yml`) on the runner.
-3. The action sets up Python, installs `requests`, and (if `use-local-model` is enabled) installs Ollama and pulls the model.
+3. The action sets up Python, installs `llm`, `llm-ollama`, and `requests`, and (if `use-local-model` is enabled) installs Ollama and pulls the model.
 4. `lint_commits.py` fetches all PR commits via the GitHub API.
 5. For each commit (skipping those matching ignore patterns):
-   - **Grammar check** -- sends the message to the LanguageTool API and collects spelling/grammar matches.
-   - **Structure check** -- sends the message to the LLM via the OpenAI-compatible chat API (Ollama local or remote provider). The response is parsed as JSON.
+   - **Grammar check** (if enabled) -- sends the message to the LanguageTool API and collects spelling/grammar matches.
+   - **Structure check** -- sends the commit message to the LLM via `model.prompt(message, system=SYSTEM_PROMPT)` using the `llm` library. The system prompt instructs the model to evaluate whether the commit explains *why* the change was made.
 6. Results are aggregated into a Markdown report.
 7. The report is posted (or updated) as a PR comment.
 8. The action exits with code 1 (failing the check) if any issues were found and `fail-on-error` is true.
 
 ## Using a Remote LLM Provider
 
-The action talks to any OpenAI-compatible API. Set `llm-api-base` and `llm-api-key`:
+The `llm` library has built-in support for OpenAI. For other providers, install
+the appropriate [llm plugin](https://llm.datasette.io/en/stable/plugins/directory.html).
 
 **OpenAI:**
 ```yaml
@@ -152,18 +158,7 @@ The action talks to any OpenAI-compatible API. Set `llm-api-base` and `llm-api-k
   with:
     use-local-model: "false"
     llm-model: "gpt-4o-mini"
-    llm-api-base: "https://api.openai.com/v1"
     llm-api-key: ${{ secrets.OPENAI_API_KEY }}
-```
-
-**Any OpenAI-compatible provider** (Groq, Together, Fireworks, etc.):
-```yaml
-- uses: shortcut/git-hygiene@main
-  with:
-    use-local-model: "false"
-    llm-model: "llama-3.1-8b-instant"
-    llm-api-base: "https://api.groq.com/openai/v1"
-    llm-api-key: ${{ secrets.GROQ_API_KEY }}
 ```
 
 ## Self-Hosted LanguageTool
@@ -192,7 +187,8 @@ ollama serve
 ollama pull qwen2.5:0.5b
 
 # Install Python dependencies
-pip install requests
+pipenv install
+# or: pip install requests llm llm-ollama
 ```
 
 ### Run
@@ -210,6 +206,9 @@ python lint_local.py --last 10
 # Use a specific model
 python lint_local.py --model tinyllama
 
+# Use an OpenAI model (built-in to llm, no plugin needed)
+python lint_local.py --model gpt-4o-mini --api-key sk-...
+
 # Enable grammar checking too
 python lint_local.py --enable-grammar
 
@@ -218,9 +217,6 @@ python lint_local.py --grammar-only
 
 # Only structure check (no LanguageTool) -- the default
 python lint_local.py --structure-only
-
-# Use a remote model instead (e.g. OpenAI)
-python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --api-key sk-...
 ```
 
 ### CLI Options
@@ -229,8 +225,7 @@ python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --
 |---|---|
 | `--range REV_RANGE` | Git revision range (e.g. `main..HEAD`) |
 | `--last N` | Number of recent commits to lint (default: 5) |
-| `--model MODEL` | LLM model name (default: `qwen2.5:0.5b`) |
-| `--api-base URL` | OpenAI-compatible API base URL (default: `http://localhost:11434/v1`) |
+| `--model MODEL` | Model name as known to `llm` (default: `qwen2.5:0.5b`). Run `llm models` to list. |
 | `--api-key KEY` | API key for remote providers |
 | `--enable-grammar` | Enable the LanguageTool grammar checker (disabled by default) |
 | `--grammar-only` | Only run the grammar check (implies `--enable-grammar`) |
@@ -244,17 +239,18 @@ python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --
 
 ```bash
 # Install dependencies
-pip install requests pytest
+pipenv install --dev
+# or: pip install requests llm llm-ollama pytest
 
 # Run unit tests (mocked, fast)
-pytest tests/ -v
+pipenv run pytest tests/ -v
 
 # Run integration tests with a real local Ollama model
 # (requires: ollama serve + ollama pull qwen2.5:0.5b)
-pytest tests/test_integration_ollama.py -v --run-ollama
+pipenv run pytest tests/test_integration_ollama.py -v --run-ollama
 
 # Use a specific model for integration tests
-OLLAMA_MODEL=tinyllama pytest tests/test_integration_ollama.py -v --run-ollama
+OLLAMA_MODEL=tinyllama pipenv run pytest tests/test_integration_ollama.py -v --run-ollama
 ```
 
 ## License

@@ -147,7 +147,6 @@ class TestCheckGrammarLocal:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_local.requests.post", return_value=mock_resp):
-            # No custom_words arg -- uses BUILTIN_WORDS which includes "ollama"
             issues = lint_local.check_grammar(
                 text, "https://api.languagetool.org/v2", "en-US"
             )
@@ -178,49 +177,38 @@ class TestCheckGrammarLocal:
 
 
 # ---------------------------------------------------------------------------
-# llm_chat (local version)
+# get_llm_model
 # ---------------------------------------------------------------------------
 
 
-class TestLlmChatLocal:
-    def test_calls_ollama_api(self):
-        """Verify request is sent to the correct endpoint."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "response text"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
+class TestGetLlmModelLocal:
+    def test_loads_model(self):
+        mock_model = MagicMock()
+        with patch("lint_local.llm.get_model", return_value=mock_model) as mock_get:
+            result = lint_local.get_llm_model("qwen2.5:0.5b")
+        mock_get.assert_called_once_with("qwen2.5:0.5b")
+        assert result is mock_model
 
-        with patch("lint_local.requests.post", return_value=mock_resp) as mock_post:
-            result = lint_local.llm_chat("prompt", "qwen2.5:0.5b", "http://localhost:11434/v1")
-
-        assert result == "response text"
-        call_url = mock_post.call_args[0][0]
-        assert call_url == "http://localhost:11434/v1/chat/completions"
-
-    def test_system_prompt_included(self):
-        """System prompt is sent as the first message."""
-        mock_resp = MagicMock()
-        mock_resp.json.return_value = {
-            "choices": [{"message": {"content": "ok"}}]
-        }
-        mock_resp.raise_for_status = MagicMock()
-
-        with patch("lint_local.requests.post", return_value=mock_resp) as mock_post:
-            lint_local.llm_chat(
-                "commit msg", "qwen2.5:0.5b", "http://localhost:11434/v1",
-                system_prompt="You are a reviewer.",
-            )
-
-        payload = mock_post.call_args.kwargs.get("json") or mock_post.call_args[1].get("json")
-        assert len(payload["messages"]) == 2
-        assert payload["messages"][0]["role"] == "system"
-        assert payload["messages"][1]["role"] == "user"
+    def test_sets_api_key(self):
+        mock_model = MagicMock()
+        mock_model.key = ""
+        with patch("lint_local.llm.get_model", return_value=mock_model):
+            result = lint_local.get_llm_model("gpt-4o-mini", api_key="sk-test")
+        assert result.key == "sk-test"
 
 
 # ---------------------------------------------------------------------------
 # check_structure (local version)
 # ---------------------------------------------------------------------------
+
+
+def _mock_model(response_text: str) -> MagicMock:
+    """Create a mock llm.Model that returns the given text."""
+    mock_response = MagicMock()
+    mock_response.text.return_value = response_text
+    mock_model = MagicMock()
+    mock_model.prompt.return_value = mock_response
+    return mock_model
 
 
 class TestCheckStructureLocal:
@@ -230,10 +218,12 @@ class TestCheckStructureLocal:
             "explains_why": True, "score": 9,
             "feedback": "Clear motivation provided.", "suggestion": None,
         })
-        with patch("lint_local.llm_chat", return_value=llm_response):
-            result = lint_local.check_structure("Fix typo\n\nThe URL had a trailing slash.", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert result["explains_why"] is True
-            assert result["score"] == 9
+        model = _mock_model(llm_response)
+        result = lint_local.check_structure(
+            "Fix typo\n\nThe URL had a trailing slash.", model=model
+        )
+        assert result["explains_why"] is True
+        assert result["score"] == 9
 
     def test_poor_commit(self):
         """LLM flags a vague commit."""
@@ -241,30 +231,44 @@ class TestCheckStructureLocal:
             "explains_why": False, "score": 2,
             "feedback": "Does not explain why.", "suggestion": "Describe the reason.",
         })
-        with patch("lint_local.llm_chat", return_value=llm_response):
-            result = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert result["explains_why"] is False
-            assert result["suggestion"] is not None
+        model = _mock_model(llm_response)
+        result = lint_local.check_structure("stuff", model=model)
+        assert result["explains_why"] is False
+        assert result["suggestion"] is not None
 
     def test_error_returns_error_dict(self):
         """If the model call fails, an error dict is returned."""
-        with patch("lint_local.llm_chat", side_effect=RuntimeError("boom")):
-            result = lint_local.check_structure("stuff", "qwen2.5:0.5b", "http://localhost:11434/v1")
-            assert result["explains_why"] is False
-            assert result["score"] == 0
-            assert "boom" in result["feedback"]
+        mock_model = MagicMock()
+        mock_model.prompt.side_effect = RuntimeError("boom")
+        result = lint_local.check_structure("stuff", model=mock_model)
+        assert result["explains_why"] is False
+        assert result["score"] == 0
+        assert "boom" in result["feedback"]
 
-    def test_system_prompt_is_used(self):
-        """check_structure sends the system prompt."""
+    def test_system_prompt_passed(self):
+        """check_structure passes the system prompt to model.prompt."""
         llm_response = json.dumps({
             "explains_why": True, "score": 8,
             "feedback": "Good.", "suggestion": None,
         })
-        with patch("lint_local.llm_chat", return_value=llm_response) as mock_chat:
-            lint_local.check_structure("some commit", "qwen2.5:0.5b", "http://localhost:11434/v1")
+        model = _mock_model(llm_response)
+        lint_local.check_structure("some commit", model=model)
 
-        assert "system_prompt" in mock_chat.call_args.kwargs
-        assert "explains the WHY" in mock_chat.call_args.kwargs["system_prompt"]
+        model.prompt.assert_called_once()
+        call_kwargs = model.prompt.call_args
+        assert "system" in call_kwargs.kwargs
+        assert "explains the WHY" in call_kwargs.kwargs["system"]
+
+    def test_falls_back_to_model_id(self):
+        """When no model object given, loads by model_id."""
+        llm_response = json.dumps({
+            "explains_why": True, "score": 8,
+            "feedback": "Good.", "suggestion": None,
+        })
+        model = _mock_model(llm_response)
+        with patch("lint_local.get_llm_model", return_value=model) as mock_get:
+            lint_local.check_structure("commit msg", model_id="tinyllama")
+        mock_get.assert_called_once_with("tinyllama", "")
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +285,6 @@ class TestParseArgs:
         assert args.structure_only is False
         assert args.model == lint_local.DEFAULT_MODEL
         assert args.api_key == ""
-        assert args.api_base == lint_local.DEFAULT_API_BASE
 
     def test_range(self):
         args = lint_local.parse_args(["--range", "main..HEAD"])
@@ -307,10 +310,6 @@ class TestParseArgs:
         args = lint_local.parse_args(["--api-key", "sk-test123"])
         assert args.api_key == "sk-test123"
 
-    def test_api_base(self):
-        args = lint_local.parse_args(["--api-base", "https://api.openai.com/v1"])
-        assert args.api_base == "https://api.openai.com/v1"
-
     def test_custom_ignore_patterns(self):
         args = lint_local.parse_args(["--ignore-pattern", "^WIP", "--ignore-pattern", "^fixup!"])
         assert args.ignore_pattern == ["^WIP", "^fixup!"]
@@ -322,6 +321,11 @@ class TestParseArgs:
     def test_custom_words_default(self):
         args = lint_local.parse_args([])
         assert args.custom_word is None
+
+    def test_no_api_base_arg(self):
+        """--api-base was removed; the llm library handles provider URLs."""
+        with pytest.raises(SystemExit):
+            lint_local.parse_args(["--api-base", "http://example.com"])
 
 
 # ---------------------------------------------------------------------------
@@ -350,11 +354,16 @@ class TestMainLocal:
             "suggestion": "stuff\n\nExplain the reason here.",
         })
 
+    def _mock_model_with(self, response_text: str) -> MagicMock:
+        return _mock_model(response_text)
+
     def test_main_skips_merge_commits(self, capsys):
+        model = self._mock_model_with(self._good_response())
+
         with (
             patch("lint_local.git_log", return_value=self._mock_commits()),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=self._good_response()),
+            patch("lint_local.get_llm_model", return_value=model),
         ):
             lint_local.main(["--last", "3"])
 
@@ -367,47 +376,48 @@ class TestMainLocal:
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo"}]),
             patch("lint_local.check_grammar", mock_grammar),
-            patch("lint_local.check_structure") as mock_structure,
+            patch("lint_local.get_llm_model") as mock_get_model,
         ):
             lint_local.main(["--grammar-only"])
 
         mock_grammar.assert_called_once()
-        mock_structure.assert_not_called()
+        mock_get_model.assert_not_called()
 
     def test_main_structure_only_skips_grammar(self):
+        model = self._mock_model_with(self._good_response())
+
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo"}]),
             patch("lint_local.check_grammar") as mock_grammar,
-            patch("lint_local.llm_chat", return_value=self._good_response()),
+            patch("lint_local.get_llm_model", return_value=model),
         ):
             lint_local.main(["--structure-only"])
 
         mock_grammar.assert_not_called()
 
     def test_main_returns_1_on_issues(self):
+        model = self._mock_model_with(self._bad_response())
+
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "stuff"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=self._bad_response()),
+            patch("lint_local.get_llm_model", return_value=model),
         ):
             rc = lint_local.main(["--last", "1"])
 
         assert rc == 1
 
     def test_main_returns_0_when_clean(self):
-        # A good response has feedback but explains_why=True, so no structure_issues
-        # unless feedback is non-empty. We need to check: main() puts feedback in
-        # structure_issues, so a "clean" commit still has feedback text but score >= 7
-        # and explains_why=True. The has_issues check depends on structure_issues being non-empty.
-        # Let's return an empty-feedback response for a truly clean result.
         clean = json.dumps({
             "explains_why": True, "score": 10,
             "feedback": "", "suggestion": None,
         })
+        model = self._mock_model_with(clean)
+
         with (
             patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo in README"}]),
             patch("lint_local.check_grammar", return_value=[]),
-            patch("lint_local.llm_chat", return_value=clean),
+            patch("lint_local.get_llm_model", return_value=model),
         ):
             rc = lint_local.main(["--last", "1"])
 

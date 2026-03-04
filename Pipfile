@@ -5,6 +5,8 @@ name = "pypi"
 
 [packages]
 requests = "*"
+llm = "*"
+llm-ollama = "*"
 
 [dev-packages]
 pytest = "*"

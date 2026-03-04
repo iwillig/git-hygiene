@@ -3,7 +3,7 @@
 Git Hygiene — lint commit messages for grammar and structure quality.
 
 Grammar:      LanguageTool API
-Structure:    LLM via OpenAI-compatible API (Ollama local or remote provider)
+Structure:    LLM via the llm library (supports Ollama, OpenAI, and many other providers)
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import re
 import sys
 from dataclasses import dataclass, field
 
+import llm
 import requests
 
 # ---------------------------------------------------------------------------
@@ -25,8 +26,6 @@ REPO = os.environ["REPO"]  # owner/repo
 PR_NUMBER = os.environ["PR_NUMBER"]
 LLM_MODEL = os.environ.get("LLM_MODEL", "qwen2.5:0.5b")
 LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
-LLM_API_BASE = os.environ.get("LLM_API_BASE", "http://localhost:11434/v1")
-USE_LOCAL_MODEL = os.environ.get("USE_LOCAL_MODEL", "true").lower() == "true"
 ENABLE_GRAMMAR = os.environ.get("ENABLE_GRAMMAR", "false").lower() == "true"
 LANGUAGETOOL_URL = os.environ.get("LANGUAGETOOL_URL", "https://api.languagetool.org/v2")
 LANGUAGETOOL_LANGUAGE = os.environ.get("LANGUAGETOOL_LANGUAGE", "en-US")
@@ -281,7 +280,7 @@ def check_grammar(text: str, custom_words: set[str] | None = None) -> list[dict]
 
 
 # ---------------------------------------------------------------------------
-# LLM structure check (OpenAI-compatible API)
+# LLM structure check (via the llm library)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -305,37 +304,12 @@ SYSTEM_PROMPT = (
 )
 
 
-def llm_chat(
-    user_message: str,
-    model: str,
-    api_base: str,
-    api_key: str = "",
-    system_prompt: str = "",
-) -> str:
-    """Send a chat completion request to an OpenAI-compatible API and return the response text."""
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    messages: list[dict] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_message})
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.1,
-    }
-
-    resp = requests.post(
-        f"{api_base}/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+def get_llm_model(model_id: str, api_key: str = "") -> llm.Model:
+    """Load a model via the llm library. Sets the API key if provided."""
+    model = llm.get_model(model_id)
+    if api_key and hasattr(model, "key"):
+        model.key = api_key
+    return model
 
 
 def _parse_llm_json(text: str) -> dict:
@@ -348,16 +322,18 @@ def _parse_llm_json(text: str) -> dict:
     return json.loads(text)
 
 
-def check_structure(message: str) -> dict:
+def check_structure(message: str, model: llm.Model | None = None) -> dict:
     """Use an LLM to evaluate whether a commit message explains *why*.
 
     Returns a dict with keys: explains_why, score, feedback, suggestion.
     On failure returns a dict with feedback containing the error.
     """
+    if model is None:
+        model = get_llm_model(LLM_MODEL, LLM_API_KEY)
+
     try:
-        text = llm_chat(
-            message, LLM_MODEL, LLM_API_BASE, LLM_API_KEY, system_prompt=SYSTEM_PROMPT
-        )
+        response = model.prompt(message, system=SYSTEM_PROMPT)
+        text = response.text()
         return _parse_llm_json(text)
     except Exception as exc:
         print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
@@ -422,10 +398,9 @@ def build_report(results: list[CommitIssue]) -> str:
 
 
 def main() -> int:
-    if USE_LOCAL_MODEL:
-        print(f"Using local Ollama model: {LLM_MODEL}")
-    else:
-        print(f"Using remote model: {LLM_MODEL} at {LLM_API_BASE}")
+    print(f"Loading model: {LLM_MODEL}")
+    model = get_llm_model(LLM_MODEL, LLM_API_KEY)
+    print(f"   Model loaded: {model.model_id}")
 
     print(f"Fetching commits for PR #{PR_NUMBER} in {REPO} ...")
     commits = fetch_pr_commits()
@@ -455,7 +430,7 @@ def main() -> int:
                 print(f"      WARNING: Grammar check failed: {exc}", file=sys.stderr)
 
         # Structure check
-        result = check_structure(message)
+        result = check_structure(message, model=model)
         ci.score = result.get("score")
         ci.suggestion = result.get("suggestion")
         feedback = result.get("feedback", "")

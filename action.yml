@@ -14,9 +14,10 @@ inputs:
 
   llm-model:
     description: >
-      LLM model to use for structure analysis.
+      LLM model name as known to the llm library.
       For Ollama (local): e.g. qwen2.5:0.5b, tinyllama, phi3:mini.
       For remote providers: e.g. gpt-4o-mini (requires llm-api-key).
+      Run 'llm models' to see available models.
     required: false
     default: "qwen2.5:0.5b"
 
@@ -24,11 +25,6 @@ inputs:
     description: "API key for a remote LLM provider (e.g. OpenAI). Not required when use-local-model is true."
     required: false
     default: ""
-
-  llm-api-base:
-    description: "Base URL for the LLM API (OpenAI-compatible). Defaults to local Ollama."
-    required: false
-    default: "http://localhost:11434/v1"
 
   use-local-model:
     description: >
@@ -82,7 +78,7 @@ runs:
 
     - name: Install Python dependencies
       shell: bash
-      run: pip install requests
+      run: pip install requests llm llm-ollama
 
     - name: Set up Ollama
       if: inputs.use-local-model == 'true'
@@ -101,8 +97,6 @@ runs:
         GITHUB_TOKEN: ${{ inputs.github-token }}
         LLM_MODEL: ${{ inputs.llm-model }}
         LLM_API_KEY: ${{ inputs.llm-api-key }}
-        LLM_API_BASE: ${{ inputs.llm-api-base }}
-        USE_LOCAL_MODEL: ${{ inputs.use-local-model }}
         ENABLE_GRAMMAR: ${{ inputs.enable-grammar }}
         LANGUAGETOOL_URL: ${{ inputs.languagetool-url }}
         LANGUAGETOOL_LANGUAGE: ${{ inputs.languagetool-language }}

@@ -3,7 +3,7 @@
 Git Hygiene — local CLI runner.
 
 Lint commit messages from the current git repository without GitHub.
-Uses Ollama for local LLM inference, or any OpenAI-compatible API.
+Uses the llm library for LLM inference (Ollama via llm-ollama, OpenAI built-in, etc.).
 
 Usage:
     # Lint the last 5 commits using a local Ollama model:
@@ -22,7 +22,7 @@ Usage:
     python lint_local.py --structure-only
 
     # Use a remote model instead (e.g. OpenAI):
-    python lint_local.py --model gpt-4o-mini --api-base https://api.openai.com/v1 --api-key sk-...
+    python lint_local.py --model gpt-4o-mini --api-key sk-...
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 
+import llm
 import requests
 
 # ---------------------------------------------------------------------------
@@ -44,7 +45,6 @@ import requests
 DEFAULT_LANGUAGETOOL_URL = "https://api.languagetool.org/v2"
 DEFAULT_LANGUAGE = "en-US"
 DEFAULT_MODEL = "qwen2.5:0.5b"
-DEFAULT_API_BASE = "http://localhost:11434/v1"
 DEFAULT_IGNORE_PATTERNS = [r"^Merge\s", r"^Revert\s"]
 
 # Built-in dictionary of common dev/tool names that LanguageTool flags as
@@ -274,7 +274,7 @@ def check_grammar(
 
 
 # ---------------------------------------------------------------------------
-# LLM structure check (OpenAI-compatible API)
+# LLM structure check (via the llm library)
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = (
@@ -298,37 +298,12 @@ SYSTEM_PROMPT = (
 )
 
 
-def llm_chat(
-    user_message: str,
-    model: str,
-    api_base: str,
-    api_key: str = "",
-    system_prompt: str = "",
-) -> str:
-    """Send a chat completion request to an OpenAI-compatible API and return the response text."""
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-
-    messages: list[dict] = []
-    if system_prompt:
-        messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": user_message})
-
-    payload = {
-        "model": model,
-        "messages": messages,
-        "temperature": 0.1,
-    }
-
-    resp = requests.post(
-        f"{api_base}/chat/completions",
-        headers=headers,
-        json=payload,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+def get_llm_model(model_id: str, api_key: str = "") -> llm.Model:
+    """Load a model via the llm library. Sets the API key if provided."""
+    model = llm.get_model(model_id)
+    if api_key and hasattr(model, "key"):
+        model.key = api_key
+    return model
 
 
 def _parse_llm_json(text: str) -> dict:
@@ -341,16 +316,21 @@ def _parse_llm_json(text: str) -> dict:
     return json.loads(text)
 
 
-def check_structure(message: str, model: str, api_base: str, api_key: str = "") -> dict:
+def check_structure(message: str, model: llm.Model | None = None, model_id: str = "", api_key: str = "") -> dict:
     """Use an LLM to evaluate whether a commit message explains *why*.
+
+    Pass either a pre-loaded *model* or a *model_id* (+ optional *api_key*)
+    to load one on the fly.
 
     Returns a dict with keys: explains_why, score, feedback, suggestion.
     On failure returns a dict with feedback containing the error.
     """
+    if model is None:
+        model = get_llm_model(model_id or DEFAULT_MODEL, api_key)
+
     try:
-        text = llm_chat(
-            message, model, api_base, api_key, system_prompt=SYSTEM_PROMPT
-        )
+        response = model.prompt(message, system=SYSTEM_PROMPT)
+        text = response.text()
         return _parse_llm_json(text)
     except Exception as exc:
         print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
@@ -453,16 +433,13 @@ examples:
     p.add_argument("--grammar-only", action="store_true", help="Only run the grammar check (implies --enable-grammar)")
     p.add_argument("--structure-only", action="store_true", help="Only run the LLM structure check")
 
-    # LLM
+    # LLM (via the llm library -- model discovery handled by llm + plugins)
     p.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help=f"LLM model name (default: {DEFAULT_MODEL})",
-    )
-    p.add_argument(
-        "--api-base",
-        default=DEFAULT_API_BASE,
-        help=f"OpenAI-compatible API base URL (default: {DEFAULT_API_BASE})",
+        help=f"LLM model name as known to the llm library (default: {DEFAULT_MODEL}). "
+        "Ollama models require the llm-ollama plugin. "
+        "Run 'llm models' to see available models.",
     )
     p.add_argument("--api-key", default="", help="API key for remote LLM providers")
 
@@ -515,6 +492,13 @@ def main(argv: list[str] | None = None) -> int:
         for w in args.custom_word:
             custom_words.add(w.lower())
 
+    # Load LLM model once (skip if grammar-only)
+    model = None
+    if not args.grammar_only:
+        print(f"Loading model: {args.model}")
+        model = get_llm_model(args.model, args.api_key)
+        print(f"   Model loaded: {model.model_id}")
+
     # Fetch commits
     if args.range:
         print(f"Fetching commits in range {args.range} ...")
@@ -556,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # Structure check
         if not args.grammar_only:
-            result = check_structure(message, args.model, args.api_base, args.api_key)
+            result = check_structure(message, model=model)
             ci.score = result.get("score")
             ci.suggestion = result.get("suggestion")
             feedback = result.get("feedback", "")
