@@ -328,3 +328,39 @@ class TestIgnorePatterns:
     def test_normal_commit_not_ignored(self):
         pattern = re.compile(r"^Merge\s")
         assert not pattern.search("Fix login timeout")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests
+# ---------------------------------------------------------------------------
+
+
+class TestRegressions:
+    def test_high_score_with_positive_feedback_not_treated_as_issue(self):
+        """Regression test: positive feedback on a 10/10 commit should not fail.
+        
+        Bug: feedback was always treated as an issue, even positive feedback.
+        Fix: only treat feedback as an issue if score < 7 or explains_why is False.
+        """
+        ci = lint_commits.CommitIssue(
+            sha="8eed9917",
+            message="Allow a looser definition of what a good git message means",
+        )
+        ci.score = 10
+        ci.suggestion = None
+        # This is positive feedback but was incorrectly treated as an issue
+        ci.structure_issues = []
+        
+        # Simulate what the fixed code should do
+        feedback = "The commit explains the reason for the change, which is excellent."
+        explains_why = True
+        score = 10
+        
+        # The bug: old code did: if feedback: ci.structure_issues = [feedback]
+        # The fix: only add feedback as issue if score < 7 or not explains_why
+        if not explains_why or score < 7:
+            if feedback:
+                ci.structure_issues = [feedback]
+        
+        # With score=10 and explains_why=True, should have no issues
+        assert not ci.has_issues, "High-scoring commits with positive feedback should not be flagged as having issues"

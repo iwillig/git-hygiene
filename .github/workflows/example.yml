@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Git Hygiene (local Ollama model)
-        uses: shortcut/git-hygiene@main
+        uses: iwillig/git-hygiene@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "true"
@@ -38,7 +38,7 @@ jobs:
   #       uses: actions/checkout@v4
   #
   #     - name: Run Git Hygiene (remote model)
-  #       uses: shortcut/git-hygiene@main
+  #       uses: iwillig/git-hygiene@main
   #       with:
   #         github-token: ${{ secrets.GITHUB_TOKEN }}
   #         use-local-model: "false"

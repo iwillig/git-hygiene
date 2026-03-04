@@ -16,7 +16,8 @@ box "GitHub Actions Runner (ubuntu-latest)" #F3F4F6
   participant "lint_commits.py" as linter #BBDEFB
 end box
 participant "LanguageTool API" as lt #FFF3E0
-participant "LLM\n(Remote or Local)" as llm_svc #E8EAF6
+participant "Ollama\n(local)" as ollama #E1BEE7
+participant "LLM API\n(remote)" as llm_remote #E8EAF6
 
 == PR Opened / Updated ==
 
@@ -26,33 +27,40 @@ gh -> action : Trigger on\npull_request event
 == Setup ==
 
 action -> action : Set up Python 3.13
-action -> action : pip install llm, requests
+action -> action : pip install llm,\nllm-ollama, requests
 alt use-local-model = true
-  action -> action : pip install mlx-lm[cpu], llm-mlx
+  action -> action : Setup Ollama\n(via setup-ollama action)
+  action -> ollama : ollama pull {model}\n(e.g., qwen2.5:0.5b)
+  ollama --> action : Model downloaded
 end
 
 == Lint Each Commit ==
 
 action -> linter : Run lint_commits.py\n(env vars from inputs)
+linter -> linter : llm.get_model(LLM_MODEL)\n(loads model via llm library)
 linter -> gh : GET /repos/{owner}/{repo}/pulls/{pr}/commits
 gh --> linter : List of commits (SHA + message)
 
 loop For each commit message
   linter -> linter : Check ignore patterns\n(skip Merge, Revert)
 
-  group Grammar Check
-    linter -> lt : POST /v2/check\n{text, language}
-    lt --> linter : {matches: [{message, rule, replacements}]}
+  alt enable-grammar = true
+    group Grammar Check (optional)
+      linter -> lt : POST /v2/check\n{text, language}
+      lt --> linter : {matches: [{message, rule, replacements}]}
+      linter -> linter : Filter matches against\ncustom words dictionary
+    end
   end
 
-  group Structure Check
+  group Structure Check (always runs)
     alt use-local-model = true
-      linter -> linter : _load_model()\nllm-mlx → MlxModel\n(Hugging Face download + CPU inference)
+      linter -> ollama : model.prompt(message,\nsystem=SYSTEM_PROMPT)\n(via llm-ollama plugin)
+      ollama --> linter : JSON response
     else Remote API
-      linter -> linter : _load_model()\nllm.get_model()\n(OpenAI / Anthropic / etc.)
+      linter -> llm_remote : model.prompt(message,\nsystem=SYSTEM_PROMPT)\n(OpenAI / Anthropic / etc.)
+      llm_remote --> linter : JSON response
     end
-    linter -> llm_svc : Prompt: evaluate commit\nmessage structure
-    llm_svc --> linter : JSON {issues: [...], score: N}
+    linter -> linter : Parse LLM response:\n{explains_why, score,\nfeedback, suggestion}
   end
 
   linter -> linter : Collect CommitIssue results
@@ -70,5 +78,13 @@ else No issues
 end
 
 action --> gh : Check status ✅ or ❌
+
+note right of linter
+  **Local Development:**
+  lint_local.py provides
+  the same functionality
+  for local git repos
+  (no GitHub integration)
+end note
 
 @enduml

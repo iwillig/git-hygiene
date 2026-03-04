@@ -422,3 +422,30 @@ class TestMainLocal:
             rc = lint_local.main(["--last", "1"])
 
         assert rc == 0
+
+    def test_main_returns_0_for_high_score_with_positive_feedback(self):
+        """Regression test: positive feedback on a 10/10 commit should not fail.
+        
+        Bug: feedback was always treated as an issue, even positive feedback.
+        Fix: only treat feedback as an issue if score < 7 or explains_why is False.
+        """
+        high_score_with_positive_feedback = json.dumps({
+            "explains_why": True,
+            "score": 10,
+            "feedback": "The commit explains the reason for the change, which is excellent.",
+            "suggestion": None,
+        })
+        model = self._mock_model_with(high_score_with_positive_feedback)
+
+        with (
+            patch("lint_local.git_log", return_value=[{
+                "sha": "8eed9917",
+                "message": "Allow a looser definition of what a good git message means"
+            }]),
+            patch("lint_local.check_grammar", return_value=[]),
+            patch("lint_local.get_llm_model", return_value=model),
+        ):
+            rc = lint_local.main(["--last", "1"])
+
+        # Should return 0 (success) because score is 10/10
+        assert rc == 0

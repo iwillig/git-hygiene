@@ -294,13 +294,23 @@ SYSTEM_PROMPT = (
     "\n"
     "A poor commit message only describes what was changed without explaining why.\n"
     "\n"
+    "Examples:\n"
+    "- BAD (no why): 'updates', 'fixes', 'misc changes' - these are too vague\n"
+    "- GOOD (has why): 'Add rate limiting to prevent brute-force attacks'\n"
+    "- GOOD (has why): 'Refactor auth module to improve testability'\n"
+    "\n"
     "Analyze the commit message and respond with a JSON object containing:\n"
     '- "explains_why": boolean - true if the message explains why the change was made\n'
     '- "score": number from 0-10 - how well it explains the why (10 being excellent)\n'
-    '- "feedback": string - specific feedback on how to improve the message\n'
-    '- "suggestion": string or null - a suggested rewrite if score < 7, otherwise null\n'
+    '- "feedback": string - specific feedback on the message (can be positive for high scores)\n'
+    '- "suggestion": string or null - ONLY provide a suggested rewrite if score < 7. '
+    "For scores 7 and above, this MUST be null.\n"
     "\n"
-    "Be strict but fair. Most commit messages fail to explain why."
+    "Be fair in your evaluation:\n"
+    "- Vague one-word commits get 0-3\n"
+    "- Commits that only describe WHAT get 3-6\n"
+    "- Commits that explain WHY get 7-10\n"
+    "- Don't be overly critical if the WHY is clear, even if it could be more detailed"
 )
 
 
@@ -313,13 +323,42 @@ def get_llm_model(model_id: str, api_key: str = "") -> llm.Model:
 
 
 def _parse_llm_json(text: str) -> dict:
-    """Strip optional markdown fences and parse JSON from an LLM response."""
+    """Strip optional markdown fences and parse JSON from an LLM response.
+    
+    Handles common issues with small models producing malformed JSON.
+    """
     text = text.strip()
     if text.startswith("```"):
         text = "\n".join(text.split("\n")[1:])
     if text.endswith("```"):
         text = "\n".join(text.split("\n")[:-1])
-    return json.loads(text)
+    text = text.strip()
+    
+    # Try to parse as-is first
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # Small models sometimes produce invalid JSON with unescaped quotes
+        # Try some basic fixes
+        import re
+        # Fix common issue: "word" inside a string value (should be \"word\")
+        # This is a heuristic - may not catch all cases
+        lines = text.split('\n')
+        fixed_lines = []
+        for line in lines:
+            # If line contains a key-value pair with quotes in the value
+            if '": "' in line and line.count('"') > 4:
+                # Try to fix unescaped quotes in string values
+                # Match pattern: "key": "value with "quotes" in it"
+                match = re.match(r'(\s*"[^"]+"\s*:\s*")(.*?)("\s*[,}]?\s*)$', line)
+                if match:
+                    prefix, value, suffix = match.groups()
+                    # Escape any quotes in the value
+                    value = value.replace('"', '\\"')
+                    line = prefix + value + suffix
+            fixed_lines.append(line)
+        text = '\n'.join(fixed_lines)
+        return json.loads(text)
 
 
 def check_structure(message: str, model: llm.Model | None = None) -> dict:
@@ -334,7 +373,14 @@ def check_structure(message: str, model: llm.Model | None = None) -> dict:
     try:
         response = model.prompt(message, system=SYSTEM_PROMPT)
         text = response.text()
-        return _parse_llm_json(text)
+        result = _parse_llm_json(text)
+        
+        # Enforce the rule: only suggest rewrites for scores < 7
+        # Small models sometimes don't follow instructions perfectly
+        if result.get("score", 0) >= 7:
+            result["suggestion"] = None
+        
+        return result
     except Exception as exc:
         print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
         return {
@@ -434,10 +480,17 @@ def main() -> int:
         ci.score = result.get("score")
         ci.suggestion = result.get("suggestion")
         feedback = result.get("feedback", "")
-        if feedback:
-            ci.structure_issues = [feedback]
-        if not result.get("explains_why", True) and not feedback:
-            ci.structure_issues = ["Commit message does not explain why the change was made"]
+        
+        # Only treat feedback as an issue if the commit doesn't explain why
+        # or if it scores below 7 (our threshold for "good enough")
+        explains_why = result.get("explains_why", True)
+        score = result.get("score", 0)
+        
+        if not explains_why or score < 7:
+            if feedback:
+                ci.structure_issues = [feedback]
+            elif not explains_why:
+                ci.structure_issues = ["Commit message does not explain why the change was made"]
 
         results.append(ci)
 

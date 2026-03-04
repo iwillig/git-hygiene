@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: shortcut/git-hygiene@main
+      - uses: iwillig/git-hygiene@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "true"
@@ -60,7 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: shortcut/git-hygiene@main
+      - uses: iwillig/git-hygiene@main
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           use-local-model: "false"
@@ -93,7 +93,7 @@ automatically suppressed.
 To add your own words, use the `custom-words` input:
 
 ```yaml
-- uses: shortcut/git-hygiene@main
+- uses: iwillig/git-hygiene@main
   with:
     github-token: ${{ secrets.GITHUB_TOKEN }}
     custom-words: |
@@ -154,7 +154,7 @@ the appropriate [llm plugin](https://llm.datasette.io/en/stable/plugins/director
 
 **OpenAI:**
 ```yaml
-- uses: shortcut/git-hygiene@main
+- uses: iwillig/git-hygiene@main
   with:
     use-local-model: "false"
     llm-model: "gpt-4o-mini"
