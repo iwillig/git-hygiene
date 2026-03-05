@@ -8,8 +8,6 @@ import re
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 # Ensure the project root is on sys.path so we can import the module
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -18,8 +16,7 @@ os.environ.setdefault("GITHUB_TOKEN", "test-token")
 os.environ.setdefault("REPO", "owner/repo")
 os.environ.setdefault("PR_NUMBER", "1")
 
-import lint_commits  # noqa: E402
-
+import lint_commits
 
 # ---------------------------------------------------------------------------
 # Grammar check
@@ -73,9 +70,7 @@ class TestCheckGrammar:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_commits.requests.post", return_value=mock_resp):
-            issues = lint_commits.check_grammar(
-                "Set up an Ollama server", custom_words={"ollama"}
-            )
+            issues = lint_commits.check_grammar("Set up an Ollama server", custom_words={"ollama"})
             assert issues == []
 
     def test_custom_word_case_insensitive(self):
@@ -93,9 +88,7 @@ class TestCheckGrammar:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_commits.requests.post", return_value=mock_resp):
-            issues = lint_commits.check_grammar(
-                "Use the NGINX proxy", custom_words={"nginx"}
-            )
+            issues = lint_commits.check_grammar("Use the NGINX proxy", custom_words={"nginx"})
             assert issues == []
 
     def test_non_dictionary_word_still_reported(self):
@@ -113,9 +106,7 @@ class TestCheckGrammar:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_commits.requests.post", return_value=mock_resp):
-            issues = lint_commits.check_grammar(
-                "Fix teh build", custom_words={"ollama", "nginx"}
-            )
+            issues = lint_commits.check_grammar("Fix teh build", custom_words={"ollama", "nginx"})
             assert len(issues) == 1
 
     def test_builtin_words_used_by_default(self):
@@ -206,12 +197,14 @@ class TestCheckStructure:
 
     def test_good_commit(self):
         """LLM recognises a commit that explains why."""
-        llm_response = json.dumps({
-            "explains_why": True,
-            "score": 9,
-            "feedback": "Good commit message that explains the motivation.",
-            "suggestion": None,
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": True,
+                "score": 9,
+                "feedback": "Good commit message that explains the motivation.",
+                "suggestion": None,
+            }
+        )
         model = self._mock_model(llm_response)
         result = lint_commits.check_structure(
             "Add user avatar upload\n\nUsers requested the ability to upload custom avatars.",
@@ -223,12 +216,14 @@ class TestCheckStructure:
 
     def test_poor_commit(self):
         """LLM flags a commit that does not explain why."""
-        llm_response = json.dumps({
-            "explains_why": False,
-            "score": 2,
-            "feedback": "This commit only states what changed, not why.",
-            "suggestion": "Fix typo in README\n\nThe API endpoint URL had a trailing slash.",
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": False,
+                "score": 2,
+                "feedback": "This commit only states what changed, not why.",
+                "suggestion": "Fix typo in README\n\nThe API endpoint URL had a trailing slash.",
+            }
+        )
         model = self._mock_model(llm_response)
         result = lint_commits.check_structure("updates", model=model)
         assert result["explains_why"] is False
@@ -237,10 +232,14 @@ class TestCheckStructure:
 
     def test_markdown_fenced_response(self):
         """LLM wraps response in markdown fences -- still parsed."""
-        inner = json.dumps({
-            "explains_why": False, "score": 3,
-            "feedback": "Missing context.", "suggestion": None,
-        })
+        inner = json.dumps(
+            {
+                "explains_why": False,
+                "score": 3,
+                "feedback": "Missing context.",
+                "suggestion": None,
+            }
+        )
         llm_response = f"```json\n{inner}\n```"
         model = self._mock_model(llm_response)
         result = lint_commits.check_structure("Fix bug", model=model)
@@ -257,10 +256,14 @@ class TestCheckStructure:
 
     def test_system_prompt_passed(self):
         """check_structure passes the system prompt to model.prompt."""
-        llm_response = json.dumps({
-            "explains_why": True, "score": 8,
-            "feedback": "Good.", "suggestion": None,
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": True,
+                "score": 8,
+                "feedback": "Good.",
+                "suggestion": None,
+            }
+        )
         model = self._mock_model(llm_response)
         lint_commits.check_structure("some commit", model=model)
 
@@ -338,7 +341,7 @@ class TestIgnorePatterns:
 class TestRegressions:
     def test_high_score_with_positive_feedback_not_treated_as_issue(self):
         """Regression test: positive feedback on a 10/10 commit should not fail.
-        
+
         Bug: feedback was always treated as an issue, even positive feedback.
         Fix: only treat feedback as an issue if score < 7 or explains_why is False.
         """
@@ -350,17 +353,18 @@ class TestRegressions:
         ci.suggestion = None
         # This is positive feedback but was incorrectly treated as an issue
         ci.structure_issues = []
-        
+
         # Simulate what the fixed code should do
         feedback = "The commit explains the reason for the change, which is excellent."
         explains_why = True
         score = 10
-        
+
         # The bug: old code did: if feedback: ci.structure_issues = [feedback]
         # The fix: only add feedback as issue if score < 7 or not explains_why
-        if not explains_why or score < 7:
-            if feedback:
-                ci.structure_issues = [feedback]
-        
+        if (not explains_why or score < 7) and feedback:
+            ci.structure_issues = [feedback]
+
         # With score=10 and explains_why=True, should have no issues
-        assert not ci.has_issues, "High-scoring commits with positive feedback should not be flagged as having issues"
+        assert not ci.has_issues, (
+            "High-scoring commits with positive feedback should not be flagged as having issues"
+        )

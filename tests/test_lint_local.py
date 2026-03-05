@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import subprocess
 import sys
 from unittest.mock import MagicMock, patch
 
@@ -19,8 +17,7 @@ os.environ.setdefault("GITHUB_TOKEN", "test-token")
 os.environ.setdefault("REPO", "owner/repo")
 os.environ.setdefault("PR_NUMBER", "1")
 
-import lint_local  # noqa: E402
-
+import lint_local
 
 # ---------------------------------------------------------------------------
 # git_log
@@ -57,7 +54,7 @@ class TestGitLog:
         mock_result.returncode = 0
 
         with patch("lint_local.subprocess.run", return_value=mock_result) as mock_run:
-            commits = lint_local.git_log(revision_range="main..HEAD")
+            lint_local.git_log(revision_range="main..HEAD")
 
         cmd = mock_run.call_args[0][0]
         assert "main..HEAD" in cmd
@@ -147,9 +144,7 @@ class TestCheckGrammarLocal:
         mock_resp.raise_for_status = MagicMock()
 
         with patch("lint_local.requests.post", return_value=mock_resp):
-            issues = lint_local.check_grammar(
-                text, "https://api.languagetool.org/v2", "en-US"
-            )
+            issues = lint_local.check_grammar(text, "https://api.languagetool.org/v2", "en-US")
             assert issues == []
 
     def test_non_dictionary_word_still_reported(self):
@@ -214,10 +209,14 @@ def _mock_model(response_text: str) -> MagicMock:
 class TestCheckStructureLocal:
     def test_good_commit(self):
         """LLM response for a good commit is parsed correctly."""
-        llm_response = json.dumps({
-            "explains_why": True, "score": 9,
-            "feedback": "Clear motivation provided.", "suggestion": None,
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": True,
+                "score": 9,
+                "feedback": "Clear motivation provided.",
+                "suggestion": None,
+            }
+        )
         model = _mock_model(llm_response)
         result = lint_local.check_structure(
             "Fix typo\n\nThe URL had a trailing slash.", model=model
@@ -227,10 +226,14 @@ class TestCheckStructureLocal:
 
     def test_poor_commit(self):
         """LLM flags a vague commit."""
-        llm_response = json.dumps({
-            "explains_why": False, "score": 2,
-            "feedback": "Does not explain why.", "suggestion": "Describe the reason.",
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": False,
+                "score": 2,
+                "feedback": "Does not explain why.",
+                "suggestion": "Describe the reason.",
+            }
+        )
         model = _mock_model(llm_response)
         result = lint_local.check_structure("stuff", model=model)
         assert result["explains_why"] is False
@@ -247,10 +250,14 @@ class TestCheckStructureLocal:
 
     def test_system_prompt_passed(self):
         """check_structure passes the system prompt to model.prompt."""
-        llm_response = json.dumps({
-            "explains_why": True, "score": 8,
-            "feedback": "Good.", "suggestion": None,
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": True,
+                "score": 8,
+                "feedback": "Good.",
+                "suggestion": None,
+            }
+        )
         model = _mock_model(llm_response)
         lint_local.check_structure("some commit", model=model)
 
@@ -261,10 +268,14 @@ class TestCheckStructureLocal:
 
     def test_falls_back_to_model_id(self):
         """When no model object given, loads by model_id."""
-        llm_response = json.dumps({
-            "explains_why": True, "score": 8,
-            "feedback": "Good.", "suggestion": None,
-        })
+        llm_response = json.dumps(
+            {
+                "explains_why": True,
+                "score": 8,
+                "feedback": "Good.",
+                "suggestion": None,
+            }
+        )
         model = _mock_model(llm_response)
         with patch("lint_local.get_llm_model", return_value=model) as mock_get:
             lint_local.check_structure("commit msg", model_id="tinyllama")
@@ -342,17 +353,24 @@ class TestMainLocal:
         ]
 
     def _good_response(self):
-        return json.dumps({
-            "explains_why": True, "score": 9,
-            "feedback": "Good commit.", "suggestion": None,
-        })
+        return json.dumps(
+            {
+                "explains_why": True,
+                "score": 9,
+                "feedback": "Good commit.",
+                "suggestion": None,
+            }
+        )
 
     def _bad_response(self):
-        return json.dumps({
-            "explains_why": False, "score": 2,
-            "feedback": "Does not explain why the change was made.",
-            "suggestion": "stuff\n\nExplain the reason here.",
-        })
+        return json.dumps(
+            {
+                "explains_why": False,
+                "score": 2,
+                "feedback": "Does not explain why the change was made.",
+                "suggestion": "stuff\n\nExplain the reason here.",
+            }
+        )
 
     def _mock_model_with(self, response_text: str) -> MagicMock:
         return _mock_model(response_text)
@@ -408,14 +426,21 @@ class TestMainLocal:
         assert rc == 1
 
     def test_main_returns_0_when_clean(self):
-        clean = json.dumps({
-            "explains_why": True, "score": 10,
-            "feedback": "", "suggestion": None,
-        })
+        clean = json.dumps(
+            {
+                "explains_why": True,
+                "score": 10,
+                "feedback": "",
+                "suggestion": None,
+            }
+        )
         model = self._mock_model_with(clean)
 
         with (
-            patch("lint_local.git_log", return_value=[{"sha": "aaa111", "message": "Fix typo in README"}]),
+            patch(
+                "lint_local.git_log",
+                return_value=[{"sha": "aaa111", "message": "Fix typo in README"}],
+            ),
             patch("lint_local.check_grammar", return_value=[]),
             patch("lint_local.get_llm_model", return_value=model),
         ):
@@ -425,23 +450,30 @@ class TestMainLocal:
 
     def test_main_returns_0_for_high_score_with_positive_feedback(self):
         """Regression test: positive feedback on a 10/10 commit should not fail.
-        
+
         Bug: feedback was always treated as an issue, even positive feedback.
         Fix: only treat feedback as an issue if score < 7 or explains_why is False.
         """
-        high_score_with_positive_feedback = json.dumps({
-            "explains_why": True,
-            "score": 10,
-            "feedback": "The commit explains the reason for the change, which is excellent.",
-            "suggestion": None,
-        })
+        high_score_with_positive_feedback = json.dumps(
+            {
+                "explains_why": True,
+                "score": 10,
+                "feedback": "The commit explains the reason for the change, which is excellent.",
+                "suggestion": None,
+            }
+        )
         model = self._mock_model_with(high_score_with_positive_feedback)
 
         with (
-            patch("lint_local.git_log", return_value=[{
-                "sha": "8eed9917",
-                "message": "Allow a looser definition of what a good git message means"
-            }]),
+            patch(
+                "lint_local.git_log",
+                return_value=[
+                    {
+                        "sha": "8eed9917",
+                        "message": "Allow a looser definition of what a good git message means",
+                    }
+                ],
+            ),
             patch("lint_local.check_grammar", return_value=[]),
             patch("lint_local.get_llm_model", return_value=model),
         ):
