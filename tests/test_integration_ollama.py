@@ -18,7 +18,6 @@ Or to use a specific model:
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 
@@ -49,6 +48,7 @@ def ollama_model_id():
 def ollama_model(ollama_model_id):
     """Load the model once per test module via the llm library."""
     from lint_local import get_llm_model
+
     return get_llm_model(ollama_model_id)
 
 
@@ -70,12 +70,12 @@ class TestOllamaStructureCheck:
 
     def test_good_commit(self, ollama_model):
         """A well-formed commit that explains why should score high.
-        
+
         Small models may occasionally produce non-JSON output, so we use
         check_structure which has error handling.
         """
         from lint_local import check_structure
-        
+
         result = check_structure(
             "Add rate limiting to the login endpoint\n\n"
             "Without rate limiting, the login endpoint is vulnerable to brute-force\n"
@@ -91,16 +91,14 @@ class TestOllamaStructureCheck:
 
     def test_vague_commit(self, ollama_model):
         """A vague one-word commit should score low.
-        
+
         Small models can be inconsistent about explains_why boolean,
         so we primarily check the score.
         """
         result = self._check(ollama_model, "updates")
         assert "explains_why" in result
         # Small models may not always set explains_why=False, but should score low
-        assert result["score"] <= 5, (
-            f"Vague commits should score low. Got {result['score']}/10"
-        )
+        assert result["score"] <= 5, f"Vague commits should score low. Got {result['score']}/10"
 
     def test_returns_valid_json(self, ollama_model):
         """Even for edge cases the model should return parseable JSON."""
@@ -118,7 +116,7 @@ class TestOllamaEndToEnd:
 
     def test_check_structure_returns_dict(self, ollama_model):
         """check_structure should return a dict with the expected keys.
-        
+
         Small models can be inconsistent, so we just verify the structure.
         """
         from lint_local import check_structure
@@ -135,7 +133,7 @@ class TestOllamaEndToEnd:
 
     def test_check_structure_clean_commit(self, ollama_model):
         """A good commit should explain why and score high.
-        
+
         Note: Small models like qwen2.5:0.5b can be inconsistent, so we just
         check that the score is reasonable (>= 6) rather than strictly checking
         explains_why, which can vary run-to-run.
@@ -160,7 +158,7 @@ class TestOllamaEndToEnd:
         The commit that adds git hygiene to the project should score 8+ and
         be considered good. This validates that the system prompt is balanced
         and not overly aggressive.
-        
+
         The commit explains WHY (to ensure quality of git commits) and provides
         context about the new workflow. It should not trigger suggestions for
         being "more comprehensive" when it already explains the motivation.
@@ -177,26 +175,26 @@ We are adding this git workflow to ensure the quality of the of the
 git commits in this code base."""
 
         result = check_structure(commit_message, model=ollama_model)
-        
+
         # Validate response structure
         assert isinstance(result, dict)
         assert "explains_why" in result
         assert "score" in result
         assert "feedback" in result
         assert "suggestion" in result
-        
+
         # The commit clearly explains WHY - to ensure quality
         assert result["explains_why"] is True, (
             f"Commit should explain why. Got: {result['feedback']}"
         )
-        
+
         # Should score 7 or higher since it explains the motivation
         # (Small models can vary between 7-9 for the same good commit)
         assert result["score"] >= 7, (
             f"Expected score >= 7 for a commit that explains why (quality assurance). "
             f"Got {result['score']}/10. Feedback: {result['feedback']}"
         )
-        
+
         # Since score >= 8, should not suggest rewrite
         assert result["suggestion"] is None or result["suggestion"] == "", (
             f"High-scoring commits (8+) should not need rewrites. "

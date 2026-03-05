@@ -29,11 +29,11 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from typing import Any
 
 import llm
 import requests
@@ -198,7 +198,6 @@ def git_log(revision_range: str | None = None, last_n: int | None = None) -> lis
         cmd.extend(["-n", str(last_n)])
     else:
         cmd.extend(["-n", "5"])
-
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
     except subprocess.CalledProcessError as exc:
@@ -216,10 +215,10 @@ def git_log(revision_range: str | None = None, last_n: int | None = None) -> lis
                 f"\n"
                 f"Suggestion: Check if the base commit exists with:\n"
                 f"  git cat-file -t {revision_range.split('..')[0] if '..' in revision_range else 'BASE_SHA'}\n",
-                file=sys.stderr
+                file=sys.stderr,
             )
         raise
-    
+
     raw = result.stdout.strip()
     if not raw:
         return []
@@ -247,7 +246,7 @@ def _extract_flagged_word(match: dict, text: str) -> str:
     offset = match.get("offset", 0)
     length = match.get("length", 0)
     if offset >= 0 and length > 0 and offset + length <= len(text):
-        return text[offset:offset + length]
+        return text[offset : offset + length]
     return ""
 
 
@@ -336,9 +335,9 @@ def get_llm_model(model_id: str, api_key: str = "") -> llm.Model:
     return model
 
 
-def _parse_llm_json(text: str) -> dict:
+def _parse_llm_json(text: str) -> dict[str, Any]:
     """Strip optional markdown fences and parse JSON from an LLM response.
-    
+
     Handles common issues with small models producing malformed JSON.
     """
     text = text.strip()
@@ -347,7 +346,7 @@ def _parse_llm_json(text: str) -> dict:
     if text.endswith("```"):
         text = "\n".join(text.split("\n")[:-1])
     text = text.strip()
-    
+
     # Try to parse as-is first
     try:
         return json.loads(text)
@@ -355,9 +354,10 @@ def _parse_llm_json(text: str) -> dict:
         # Small models sometimes produce invalid JSON with unescaped quotes
         # Try some basic fixes
         import re
+
         # Fix common issue: "word" inside a string value (should be \"word\")
         # This is a heuristic - may not catch all cases
-        lines = text.split('\n')
+        lines = text.split("\n")
         fixed_lines = []
         for line in lines:
             # If line contains a key-value pair with quotes in the value
@@ -371,11 +371,13 @@ def _parse_llm_json(text: str) -> dict:
                     value = value.replace('"', '\\"')
                     line = prefix + value + suffix
             fixed_lines.append(line)
-        text = '\n'.join(fixed_lines)
+        text = "\n".join(fixed_lines)
         return json.loads(text)
 
 
-def check_structure(message: str, model: llm.Model | None = None, model_id: str = "", api_key: str = "") -> dict:
+def check_structure(
+    message: str, model: llm.Model | None = None, model_id: str = "", api_key: str = ""
+) -> dict[str, Any]:
     """Use an LLM to evaluate whether a commit message explains *why*.
 
     Pass either a pre-loaded *model* or a *model_id* (+ optional *api_key*)
@@ -391,12 +393,12 @@ def check_structure(message: str, model: llm.Model | None = None, model_id: str 
         response = model.prompt(message, system=SYSTEM_PROMPT)
         text = response.text()
         result = _parse_llm_json(text)
-        
+
         # Enforce the rule: only suggest rewrites for scores < 7
         # Small models sometimes don't follow instructions perfectly
         if result.get("score", 0) >= 7:
             result["suggestion"] = None
-        
+
         return result
     except Exception as exc:
         print(f"WARNING: LLM structure check failed: {exc}", file=sys.stderr)
@@ -443,7 +445,7 @@ def print_report(results: list[CommitIssue]) -> None:
             for gi in r.grammar_issues:
                 suggestion = ""
                 if gi["replacements"]:
-                    suggestion = f' -> try: {", ".join(gi["replacements"])}'
+                    suggestion = f" -> try: {', '.join(gi['replacements'])}"
                 print(f"    - {gi['message']}{suggestion}  ({gi['rule']})")
 
         if r.structure_issues:
@@ -496,7 +498,11 @@ examples:
         action="store_true",
         help="Enable the LanguageTool grammar checker (disabled by default)",
     )
-    p.add_argument("--grammar-only", action="store_true", help="Only run the grammar check (implies --enable-grammar)")
+    p.add_argument(
+        "--grammar-only",
+        action="store_true",
+        help="Only run the grammar check (implies --enable-grammar)",
+    )
     p.add_argument("--structure-only", action="store_true", help="Only run the LLM structure check")
 
     # LLM (via the llm library -- model discovery handled by llm + plugins)
@@ -610,17 +616,19 @@ def main(argv: list[str] | None = None) -> int:
             ci.score = result.get("score")
             ci.suggestion = result.get("suggestion")
             feedback = result.get("feedback", "")
-            
+
             # Only treat feedback as an issue if the commit doesn't explain why
             # or if it scores below 7 (our threshold for "good enough")
             explains_why = result.get("explains_why", True)
             score = result.get("score", 0)
-            
+
             if not explains_why or score < 7:
                 if feedback:
                     ci.structure_issues = [feedback]
                 elif not explains_why:
-                    ci.structure_issues = ["Commit message does not explain why the change was made"]
+                    ci.structure_issues = [
+                        "Commit message does not explain why the change was made"
+                    ]
 
         results.append(ci)
 

@@ -10,6 +10,9 @@ llm-ollama = "*"
 
 [dev-packages]
 pytest = "*"
+ruff = "*"
+mypy = "*"
+types-requests = "*"
 
 [requires]
 python_version = "3.13"
